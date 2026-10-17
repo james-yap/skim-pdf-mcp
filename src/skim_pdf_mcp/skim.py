@@ -475,18 +475,21 @@ def rtf_to_text(data: bytes) -> str:
         if match.group("open"):
             depth += 1
             pending_ignorable = True
+            pending_unicode_skip = 0
         elif match.group("close"):
             if skip_from and skip_from[-1] == depth:
                 skip_from.pop()
                 skip_depth -= 1
             depth -= 1
             pending_ignorable = False
+            pending_unicode_skip = 0
         elif match.group("word") is not None:
             word = match.group("word").decode("ascii")
             if pending_ignorable and word in _RTF_SKIPPED_DESTINATIONS and not skip_depth:
                 skip_from.append(depth)
                 skip_depth += 1
             pending_ignorable = False
+            pending_unicode_skip = 0
             if skip_depth:
                 continue
             if word in ("par", "line"):
@@ -503,14 +506,21 @@ def rtf_to_text(data: bytes) -> str:
                 skip_from.append(depth)  # an ignorable destination: ``{\*\name ...}``
                 skip_depth += 1
             pending_ignorable = False
-            if not skip_depth and sym in (b"\\", b"{", b"}"):
+            if pending_unicode_skip:
+                pending_unicode_skip = 0
+            elif not skip_depth and sym in (b"\\", b"{", b"}"):
                 out.append(sym.decode("ascii"))
         elif match.group("hex") is not None:
             pending_ignorable = False
-            if not skip_depth:
+            if pending_unicode_skip:
+                pending_unicode_skip = 0
+            elif not skip_depth:
                 out.append(bytes([int(match.group("hex")[1:], 16)]).decode("cp1252", "replace"))
         else:
             pending_ignorable = False
+            if pending_unicode_skip and skip_depth:
+                pending_unicode_skip = 0
+                continue
             if skip_depth:
                 continue
             chunk = match.group("text").decode("cp1252", "replace")
