@@ -48,7 +48,7 @@ uv venv && uv pip install -e ".[dev]"
 - `skimnotes` plist shape (verified with skimnotes 2.10.2): array of dicts with `type` ("Underline"), `pageIndex` (0-based), `bounds` (`"{{x, y}, {w, h}}"`), `color` (`[r, g, b, a]` 0–1), `contents`, `string`, `quadrilateralPoints`. Fallback ids are `skimnotes:<index>` and are never mutable.
 - FastMCP here is the standalone `fastmcp` package (4.x), not `mcp.server.fastmcp`.
 - Skim's AppleScript dictionary reserves ordinary words inside `tell application "Skim"`: `status` (a download property) as a variable name made `set status to "missing"` fail with `Can't set status … (-10006)`. Check new variable names against `Skim.sdef` (in the Skim source) before using them in a snippet; the snippets use `outcome`.
-- Pending is a **green** underline (`g >= 0.6` and ahead of red/blue by 0.4), processed is neutral gray; red is just another foreign color. The page-image outline for pending is `pdf.PENDING_RGB` (green).
+- Pending is a **green** underline (`g >= 0.35` and ahead of both red and blue by 0.3; Skim's own green reads as about (0.06, 0.44, 0.01), so a "bright green only" threshold misses it), processed is neutral gray; red is just another foreign color. The page-image outline for pending is `pdf.PENDING_RGB` (green).
 
 ## Logging
 

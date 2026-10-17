@@ -88,7 +88,7 @@ def classify_color(color: Color) -> UnderlineStatus:
     """Green -> pending, neutral gray -> processed, everything else -> other."""
     hi = max(color.r, color.g, color.b)
     lo = min(color.r, color.g, color.b)
-    if color.g >= 0.6 and color.g - max(color.r, color.b) >= 0.4:
+    if color.g >= 0.35 and color.g - max(color.r, color.b) >= 0.3:
         return UnderlineStatus.PENDING
     if hi - lo <= 0.08 and 0.2 <= hi <= 0.85:
         return UnderlineStatus.PROCESSED
