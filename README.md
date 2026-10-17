@@ -80,7 +80,7 @@ Tunnel limits that shape this server: a serialized response may be at most **10 
 
 1. Read in Skim. Underline passages you want to ask about with a **red** underline. (Underline colors are configurable in Skim's settings; pure red is what counts as pending.)
 2. Optionally select text for a one-off question — the live selection is included in the context.
-3. In ChatGPT: *"Go through my pending underlines."* ChatGPT calls `get_reading_context` and sees the page image with your selection outlined in **blue** and pending underlines outlined in **red**, plus each underline's quoted text and any comment you typed on the note.
+3. In ChatGPT: *"Go through my pending underlines."* ChatGPT calls `get_reading_context` and sees the page image with your selection outlined in **blue** and pending underlines on that page outlined in **red**, plus each underline's quoted text and any comment you typed on the note.
 4. When an underline has been dealt with, ChatGPT calls `mark_processed` (you approve it) and the underline turns **gray** in Skim. It stays in the document as a record.
 5. Later, when you want the clutter gone, ask ChatGPT to `clear_processed` specific gray underlines (you approve it). Only gray underlines whose ids you name are deleted.
 
@@ -124,10 +124,10 @@ All tools accept an optional `document_path` (a path listed by `get_open_documen
 }
 ```
 
-- With nothing selected, `selection` is explicitly `{"present": false, "text": "", "page": null, "bounds": null}`.
+- With nothing selected, `selection` is explicitly `{"present": false, "text": "", "page": null, "bounds": null}`. The selection outline is only drawn when the selection is on the rendered page.
 - Rectangles are in PDF points with the origin at the page's bottom-left (y grows upward).
 - `quoted_text` is read from the PDF text layer under the underline; `comment` is the note's own text, empty when it merely repeats the quote. A multi-line underline is described by one bounding rectangle, so its quoted text can include neighbouring words in that box — check the image.
-- Up to 50 pending underlines are listed (`pending_truncated` tells you if there were more; use `get_pending_underlines` for all). `page_text` is capped at 8000 characters.
+- Up to 50 pending underlines are listed (`pending_truncated` tells you if there were more; use `get_pending_underlines` for all). `page_text` is capped at 8000 characters. Only pending underlines on the rendered page are outlined on the image.
 - Problems that do not prevent a useful answer (selection unreadable, image failed) appear in `warnings` instead of failing the call.
 
 ### `get_pending_underlines`
@@ -136,10 +136,10 @@ Returns `{"document": …, "count": n, "underlines": […], "warnings": […]}` 
 
 ### `mark_processed` / `clear_processed`
 
-Both take `ids` (underline ids from the tools above) and return `{"document": …, <result lists>, "skipped": [{"id", "reason"}]}`:
+Both take `ids` (underline ids from the tools above) and return `{"document": …, <result lists>, "skipped": [{"id", "reason"}]}`. Every requested id appears in exactly one result list:
 
-- `mark_processed` → `marked_processed` (recolored gray), `already_processed`, and skipped ids with reason `not_found` or `not_a_pending_underline` (highlights and non-red underlines are never recolored).
-- `clear_processed` → `cleared` (deleted), and skipped ids with reason `not_found`, `still_pending` or `not_a_processed_underline`. A red underline can never be deleted by this tool.
+- `mark_processed` → `marked_processed` (recolored gray), `already_processed`, and skipped ids with reason `not_found`, `read_only_skimnotes_id`, `not_a_pending_underline` (highlights and non-red underlines are never recolored), or the backend outcome (`missing`, `not_underline`) when the recolor did not happen.
+- `clear_processed` → `cleared` (deleted), and skipped ids with reason `not_found`, `read_only_skimnotes_id`, `still_pending`, `not_a_processed_underline`, or the backend outcome (`missing`, `not_underline`) when the delete did not happen. A red underline can never be deleted by this tool.
 
 **These two tools change your document. Run them only behind explicit approval.** They are annotated `readOnlyHint: false` (and `destructiveHint: true` for `clear_processed`) so ChatGPT asks for confirmation; keep that confirmation enabled and read the ids it proposes before approving.
 

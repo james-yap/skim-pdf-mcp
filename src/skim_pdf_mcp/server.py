@@ -76,8 +76,9 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
         Returns the front document (name, path), its current page, the live text selection
         (explicitly empty when nothing is selected), pending red underlines with their quoted
         text, page, color and comment, the page's text layer, and a PNG of the page with the
-        selection (blue) and pending underlines (red) outlined. The image is the ground truth
-        for math; the text layer may garble formulas. Read-only.
+        selection (blue, only when it is on the rendered page) and the pending underlines
+        on that page (red) outlined. The image is the ground truth for math; the text layer
+        may garble formulas. Read-only.
 
         Args:
             document_path: Path of an open document (see get_open_documents). Default: front.
