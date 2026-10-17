@@ -6,43 +6,43 @@ from collections.abc import Sequence
 from types import TracebackType
 
 from skim_pdf_mcp.models import (
-    Color,
+    AnchoredNote,
     DocumentInfo,
     Rect,
     Selection,
     SkimError,
-    UnderlineNote,
 )
 from skim_pdf_mcp.pdf import DEFAULT_DPI, Overlay, RenderedPage
-
-RED = Color(1.0, 0.0, 0.0)
-GRAY = Color(0.5, 0.5, 0.5)
-BLUE = Color(0.0, 0.0, 1.0)
 
 
 def note(
     note_id: str,
     page: int = 1,
-    color: Color = RED,
     text: str = "",
+    icon: str = "help",
     bounds: Rect | None = None,
-) -> UnderlineNote:
-    return UnderlineNote(
+    quoted_text: str = "",
+) -> AnchoredNote:
+    return AnchoredNote(
         id=note_id,
         page=page,
-        bounds=bounds or Rect(72, 690, 200, 706),
-        color=color,
+        bounds=bounds or Rect(72, 690, 88, 706),
+        icon=icon,
         text=text,
+        quoted_text=quoted_text,
     )
 
 
 class FakeBackend:
-    """In-memory Skim: one list of documents, notes per path, a selection per path."""
+    """In-memory Skim: one list of documents, notes per path, a selection per path.
+
+    It has no way to write, mirroring the real backend's read-only interface.
+    """
 
     def __init__(
         self,
         documents: list[DocumentInfo],
-        notes: dict[str, list[UnderlineNote]] | None = None,
+        notes: dict[str, list[AnchoredNote]] | None = None,
         selections: dict[str, Selection] | None = None,
         warnings: list[str] | None = None,
     ) -> None:
@@ -50,8 +50,6 @@ class FakeBackend:
         self.notes = notes or {}
         self.selections = selections or {}
         self.warnings = warnings or []
-        self.recolored: list[tuple[str, tuple[str, ...], Color]] = []
-        self.deleted: list[tuple[str, tuple[str, ...]]] = []
         self.selection_error: SkimError | None = None
 
     def list_documents(self) -> tuple[list[DocumentInfo], list[str]]:
@@ -62,24 +60,8 @@ class FakeBackend:
             raise self.selection_error
         return self.selections.get(path, Selection())
 
-    def list_underlines(self, path: str) -> list[UnderlineNote]:
+    def list_notes(self, path: str) -> list[AnchoredNote]:
         return list(self.notes.get(path, []))
-
-    def recolor_underlines(self, path: str, ids: Sequence[str], color: Color) -> dict[str, str]:
-        self.recolored.append((path, tuple(ids), color))
-        out = {}
-        for note_id in ids:
-            out[note_id] = "ok"
-            self.notes[path] = [
-                UnderlineNote(n.id, n.page, n.bounds, color, n.text) if n.id == note_id else n
-                for n in self.notes[path]
-            ]
-        return out
-
-    def delete_underlines(self, path: str, ids: Sequence[str]) -> dict[str, str]:
-        self.deleted.append((path, tuple(ids)))
-        self.notes[path] = [n for n in self.notes[path] if n.id not in ids]
-        return dict.fromkeys(ids, "ok")
 
 
 class FakePdf:
@@ -115,7 +97,8 @@ class FakePdf:
         return f"text of page {page}"
 
     def text_in_rect(self, page: int, rect: Rect) -> str:
-        return self.quotes.get(f"{page}:{round(rect.x0)}", "")
+        """Canned text keyed ``"<page>:<centre y of the rect>"``."""
+        return self.quotes.get(f"{page}:{round((rect.y0 + rect.y1) / 2)}", "")
 
     def render(
         self, page: int, overlays: Sequence[Overlay], dpi: int = DEFAULT_DPI

@@ -5,7 +5,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from skim_pdf_mcp.models import Color, Rect, SkimError, UnderlineStatus
+from skim_pdf_mcp.models import Rect, SkimError
 from skim_pdf_mcp.skim import (
     RS,
     US,
@@ -13,6 +13,7 @@ from skim_pdf_mcp.skim import (
     SkimNotesReader,
     parse_numbers,
     parse_skimnotes_plist,
+    rtf_to_text,
 )
 
 
@@ -92,72 +93,83 @@ def test_get_selection_without_page_or_rects_keeps_text() -> None:
     assert (sel.text, sel.page, sel.bounds) == ("just text", None, None)
 
 
-def test_list_underlines_parses_sixteen_bit_colors_and_comma_decimals() -> None:
-    raw = rec("id-1", "2", "72;690;200;706;", "65535;0;0;65535;", "why?") + rec(
-        "id-2", "5", "10,5;20;30;40;", "32768;32768;32768;65535;", ""
+def test_list_notes_parses_icon_both_text_fields_and_comma_decimals() -> None:
+    raw = rec("id-1", "2", "72;690;88;706;", "help icon", "why?\nsecond line", "the passage") + rec(
+        "id-2", "5", "10,5;20;30;40;", "key icon", "", ""
     )
-    notes = AppleScriptBackend(ScriptedRunner({"osascript": raw.encode()})).list_underlines("/a")
-    assert [n.id for n in notes] == ["id-1", "id-2"]
-    assert notes[0].status is UnderlineStatus.PENDING
-    assert notes[0].text == "why?"
-    assert notes[1].status is UnderlineStatus.PROCESSED
+    notes = AppleScriptBackend(ScriptedRunner({"osascript": raw.encode()})).list_notes("/a")
+    assert [(n.id, n.page, n.icon, n.text, n.quoted_text) for n in notes] == [
+        ("id-1", 2, "help", "why?\nsecond line", "the passage"),
+        ("id-2", 5, "key", "", ""),
+    ]
     assert notes[1].bounds == Rect(10.5, 20, 30, 40)
 
 
-def test_list_underlines_skips_malformed_records() -> None:
-    raw = rec("bad", "x", "1;2;3;", "1;2;") + rec("ok", "1", "1;2;3;4;", "65535;0;0;")
-    notes = AppleScriptBackend(ScriptedRunner({"osascript": raw.encode()})).list_underlines("/a")
-    assert [n.id for n in notes] == ["ok"]
-    assert notes[0].color.a == 1.0
-
-
-def test_recolor_passes_sixteen_bit_gray_then_ids_and_reports_per_id_status() -> None:
-    runner = ScriptedRunner({"osascript": (rec("a", "ok") + rec("b", "not_underline")).encode()})
-    out = AppleScriptBackend(runner).recolor_underlines("/a.pdf", ["a", "b"], Color(0.5, 0.5, 0.5))
-    assert out == {"a": "ok", "b": "not_underline"}
-    args = runner.calls[0]
-    tail = args[args.index("/a.pdf") :]
-    assert tail == ["/a.pdf", "32768", "32768", "32768", "65535", "a", "b"]
-
-
-def test_delete_passes_only_requested_ids() -> None:
-    runner = ScriptedRunner({"osascript": rec("a", "ok").encode()})
-    assert AppleScriptBackend(runner).delete_underlines("/a.pdf", ["a"]) == {"a": "ok"}
-    assert runner.calls[0][-2:] == ["/a.pdf", "a"]
-
-
-def test_mutations_with_no_ids_never_invoke_osascript() -> None:
-    runner = ScriptedRunner({})
-    backend = AppleScriptBackend(runner)
-    assert backend.recolor_underlines("/a", [], Color(0.5, 0.5, 0.5)) == {}
-    assert backend.delete_underlines("/a", []) == {}
-    assert runner.calls == []
+def test_list_notes_skips_malformed_records_and_tolerates_missing_icon_and_text() -> None:
+    raw = rec("bad", "x", "1;2;3;") + rec("ok", "1", "1;2;3;4;")
+    notes = AppleScriptBackend(ScriptedRunner({"osascript": raw.encode()})).list_notes("/a")
+    assert [(n.id, n.icon, n.text) for n in notes] == [("ok", "", "")]
 
 
 def _plist_notes() -> bytes:
-    # Shape produced by `skimnotes get -format plist` (verified against skimnotes 2.10.2).
+    # Shape produced by `skimnotes get -format plist` (verified against skimnotes 2.10.2): for an
+    # anchored note "contents" is Skim's text property and "text" is the RTF body.
     notes = [
+        {
+            "type": "Note",
+            "pageIndex": 0,
+            "bounds": "{{72, 680}, {16, 16}}",
+            "color": [1.0, 1.0, 0.5, 1.0],
+            "contents": "the passage it was made from",
+            "text": SKIM_RTF,
+            "iconType": 3,
+        },
+        {"type": "Highlight", "pageIndex": 0, "bounds": "{{0, 0}, {1, 1}}", "color": [1, 1, 0, 1]},
         {
             "type": "Underline",
             "pageIndex": 0,
-            "bounds": "{{72, 680}, {100, 16}}",
-            "color": [1.0, 0.0, 0.0, 1.0],
-            "contents": "my comment",
-            "string": "Hello world",
-            "quadrilateralPoints": ["{72, 696}", "{172, 696}", "{72, 680}", "{172, 680}"],
+            "bounds": "{{72, 600}, {100, 16}}",
+            "contents": "not for ChatGPT",
         },
-        {"type": "Highlight", "pageIndex": 0, "bounds": "{{0, 0}, {1, 1}}", "color": [1, 1, 0, 1]},
     ]
     return plistlib.dumps(notes, fmt=plistlib.FMT_BINARY)
 
 
-def test_parse_skimnotes_plist_reads_underlines_only() -> None:
+def test_parse_skimnotes_plist_reads_anchored_notes_only() -> None:
     notes = parse_skimnotes_plist(_plist_notes())
     assert len(notes) == 1
     note = notes[0]
-    assert (note.id, note.page, note.text) == ("skimnotes:0", 1, "my comment")
-    assert note.bounds == Rect(72, 680, 172, 696)
-    assert note.status is UnderlineStatus.PENDING
+    assert (note.id, note.page, note.icon) == ("skimnotes:0", 1, "help")
+    assert note.text == "this is a mistake, right?"  # decoded from the RTF body
+    assert note.quoted_text == "the passage it was made from"  # Skim's "contents"
+    assert note.bounds == Rect(72, 680, 88, 696)
+
+
+# Written by Skim 1.7.17 for an anchored note whose body is "this is a mistake, right?".
+SKIM_RTF = (
+    b"{\\rtf1\\ansi\\ansicpg1252\\cocoartf2907\n\\cocoatextscaling0\\cocoaplatform0"
+    b"{\\fonttbl\\f0\\fswiss\\fcharset0 Helvetica;}\n{\\colortbl;\\red255\\green255\\blue255;}\n"
+    b"{\\*\\expandedcolortbl;;}\n\\pard\\tx560\\tx1120\\pardirnatural\\partightenfactor0\n\n"
+    b"\\f0\\fs24 \\cf0 this is a mistake, right?}"
+)
+
+
+@pytest.mark.parametrize(
+    ("rtf", "expected"),
+    [
+        (SKIM_RTF, "this is a mistake, right?"),
+        (b"{\\rtf1\\ansi first\\par second\\line third\\tab x}", "first\nsecond\nthird\tx"),
+        (b"{\\rtf1\\ansi caf\\'e9 \\u8217? \\\\ \\{ok\\}}", "café \u2019 \\ {ok}"),
+        (b"{\\rtf1\\ansi \\u8217\\'92 text}", "\u2019 text"),
+        (b"{\\rtf1\\ansi \\u8217\\\\ text}", "\u2019 text"),
+        (b"{\\rtf1\\ansi \\u8217\\par text}", "\u2019\ntext"),
+        (b"{\\rtf1{\\*\\generator Cocoa; hidden text}shown}", "shown"),
+        (b"{\\rtf1{\\fonttbl{\\f0 Helvetica;}}{\\info{\\author nobody}}body}", "body"),
+        (b"", ""),
+    ],
+)
+def test_rtf_to_text(rtf: bytes, expected: str) -> None:
+    assert rtf_to_text(rtf) == expected
 
 
 def test_parse_skimnotes_plist_rejects_garbage() -> None:
@@ -165,15 +177,15 @@ def test_parse_skimnotes_plist_rejects_garbage() -> None:
         parse_skimnotes_plist(b"not a plist")
 
 
-def test_underline_listing_falls_back_to_skimnotes_when_applescript_fails() -> None:
+def test_note_listing_falls_back_to_skimnotes_when_applescript_fails() -> None:
     runner = ScriptedRunner({"osascript": SkimError("timed out"), "skimnotes": _plist_notes()})
     backend = AppleScriptBackend(runner, notes_fallback=SkimNotesReader(runner))
-    notes = backend.list_underlines("/a.pdf")
+    notes = backend.list_notes("/a.pdf")
     assert [n.id for n in notes] == ["skimnotes:0"]
     assert runner.calls[-1] == ["skimnotes", "get", "-format", "plist", "/a.pdf", "-"]
 
 
-def test_underline_listing_without_fallback_propagates_applescript_error() -> None:
+def test_note_listing_without_fallback_propagates_applescript_error() -> None:
     runner = ScriptedRunner({"osascript": SkimError("timed out")})
     with pytest.raises(SkimError, match="timed out"):
-        AppleScriptBackend(runner).list_underlines("/a.pdf")
+        AppleScriptBackend(runner).list_notes("/a.pdf")

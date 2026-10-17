@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import pytest
 
-from skim_pdf_mcp.models import DocumentInfo, Rect, Selection, SkimError, UnderlineNote
-from skim_pdf_mcp.pdf import PENDING_RGB, SELECTION_RGB
-from skim_pdf_mcp.service import MAX_PAGE_TEXT_CHARS, MAX_PENDING_IN_CONTEXT, ReadingService
+from skim_pdf_mcp.models import AnchoredNote, DocumentInfo, Rect, Selection, SkimError
+from skim_pdf_mcp.pdf import NOTE_RGB, SELECTION_RGB
+from skim_pdf_mcp.service import MAX_PAGE_TEXT_CHARS, NEARBY_HALF_HEIGHT, ReadingService
 
-from fakes import BLUE, GRAY, RED, FakeBackend, FakePdf, note
+from fakes import FakeBackend, FakePdf, note
 
 FRONT = DocumentInfo("front.pdf", "/docs/front.pdf", page_count=5, current_page=3)
 BACK = DocumentInfo("back.pdf", "/docs/back.pdf", page_count=2, current_page=1)
 
 
 def make(
-    notes: dict[str, list[UnderlineNote]] | None = None,
+    notes: dict[str, list[AnchoredNote]] | None = None,
     selections: dict[str, Selection] | None = None,
     pdf: FakePdf | None = None,
 ) -> tuple[ReadingService, FakeBackend, FakePdf]:
@@ -38,13 +38,13 @@ def test_open_documents_reports_skipped_path_lookups_and_resolve_still_finds_hea
     out = svc.open_documents()
     assert [d["path"] for d in out["documents"]] == [BACK.path]
     assert out["warnings"] == ["Skipped 'b.pdf': path lookup failed: boom"]
-    assert svc.pending_underlines(BACK.path)["document"]["path"] == BACK.path
+    assert svc.anchored_notes(BACK.path)["document"]["path"] == BACK.path
 
 
 def test_unknown_document_path_is_rejected_and_lists_open_ones() -> None:
     svc, _, _ = make()
     with pytest.raises(SkimError, match=r"/docs/front\.pdf"):
-        svc.pending_underlines("/etc/passwd")
+        svc.anchored_notes("/etc/passwd")
 
 
 def test_context_defaults_to_front_document_and_current_page_with_no_selection() -> None:
@@ -56,6 +56,7 @@ def test_context_defaults_to_front_document_and_current_page_with_no_selection()
     assert ctx.data["page_text"] == "text of page 3"
     assert ctx.png == b"\x89PNG-fake"
     assert ctx.data["image"]["page"] == 3
+    assert ctx.data["note_count"] == 0 and ctx.data["notes"] == []
     assert pdf.render_calls == [(3, [])]
 
 
@@ -70,64 +71,77 @@ def test_selection_page_wins_over_current_page_and_selection_rect_is_overlaid() 
     assert [(o.rect, o.color) for o in overlays] == [(Rect(10, 10, 50, 30), SELECTION_RGB)]
 
 
-def test_explicit_page_wins_and_only_that_pages_pending_underlines_are_drawn() -> None:
-    notes = {FRONT.path: [note("a", page=2), note("b", page=3), note("c", page=2, color=GRAY)]}
-    svc, _, pdf = make(notes)
-    ctx = svc.reading_context(page=2)
-    assert ctx.data["page"] == 2
-    _, overlays = pdf.render_calls[0]
-    assert [o.color for o in overlays] == [PENDING_RGB]  # only pending "a"
-    # ...but the text listing covers all pages.
-    assert [u["id"] for u in ctx.data["pending_underlines"]] == ["a", "b"]
-
-
 def test_out_of_range_page_is_rejected() -> None:
     svc, _, _ = make()
     with pytest.raises(SkimError, match="out of range"):
         svc.reading_context(page=6)
 
 
-def test_pending_listing_excludes_processed_and_foreign_colors_and_uses_reading_order() -> None:
+def test_context_lists_every_note_of_the_whole_document_in_reading_order_for_any_icon() -> None:
     notes = {
         FRONT.path: [
-            note("low", page=2, bounds=Rect(72, 100, 200, 116)),
-            note("high", page=2, bounds=Rect(72, 600, 200, 616)),
-            note("p1", page=1),
-            note("done", page=1, color=GRAY),
-            note("blue", page=1, color=BLUE),
+            note("low", page=2, icon="key", bounds=Rect(72, 100, 88, 116)),
+            note("high", page=2, icon="help", bounds=Rect(72, 600, 88, 616)),
+            note("p5", page=5, icon="comment"),
+            note("p1", page=1, icon="note", text="  why is this true?  "),
         ]
     }
     svc, _, _ = make(notes)
-    out = svc.pending_underlines()
-    assert [u["id"] for u in out["underlines"]] == ["p1", "high", "low"]
-    assert out["count"] == 3
+    ctx = svc.reading_context(page=2)  # a page with notes is rendered, but all pages are listed
+    assert [n["id"] for n in ctx.data["notes"]] == ["p1", "high", "low", "p5"]
+    assert ctx.data["note_count"] == 4
+    assert [n["icon"] for n in ctx.data["notes"]] == ["note", "help", "key", "comment"]
+    assert ctx.data["notes"][0]["text"] == "why is this true?"
+    assert [n["id"] for n in svc.anchored_notes()["notes"]] == ["p1", "high", "low", "p5"]
 
 
-def test_quoted_text_comes_from_pdf_layer_and_comment_only_when_different() -> None:
-    pdf = FakePdf(pages=5, quotes={"1:72": "the quoted words"})
+def test_note_reports_what_the_reader_wrote_separately_from_the_passage_it_was_made_from() -> None:
+    notes = {FRONT.path: [note("a", text="is this a mistake?", quoted_text="  the passage  ")]}
+    svc, _, _ = make(notes)
+    (entry,) = svc.reading_context().data["notes"]
+    assert (entry["text"], entry["quoted_text"]) == ("is this a mistake?", "the passage")
+
+
+def test_every_note_is_returned_however_many_there_are() -> None:
+    many = [note(f"n{i}", bounds=Rect(72, i, 88, i + 1)) for i in range(120)]
+    svc, _, _ = make({FRONT.path: many})
+    assert len(svc.reading_context().data["notes"]) == 120
+    assert svc.anchored_notes()["count"] == 120
+
+
+def test_only_the_rendered_pages_notes_are_outlined() -> None:
+    notes = {FRONT.path: [note("a", page=2), note("b", page=3), note("c", page=2)]}
+    svc, _, pdf = make(notes)
+    svc.reading_context(page=2)
+    _, overlays = pdf.render_calls[0]
+    assert [o.color for o in overlays] == [NOTE_RGB, NOTE_RGB]
+
+
+def test_nearby_text_is_the_page_text_level_with_the_anchor() -> None:
+    centre = 700
+    pdf = FakePdf(pages=5, quotes={f"2:{centre}": "the lines beside the note"})
     notes = {
         FRONT.path: [
-            note("same", text="the  quoted\nwords"),
-            note("diff", text="why is this true?", bounds=Rect(72, 1, 2, 3)),
+            note("beside", page=2, bounds=Rect(500, centre - 8, 516, centre + 8)),
+            note("elsewhere", page=2, bounds=Rect(500, 100, 516, 116)),
         ]
     }
     svc, _, _ = make(notes, pdf=pdf)
-    by_id = {u["id"]: u for u in svc.pending_underlines()["underlines"]}
-    assert by_id["same"]["quoted_text"] == "the quoted words"
-    assert by_id["same"]["comment"] == ""
-    assert by_id["diff"]["quoted_text"] == "the quoted words"
-    assert by_id["diff"]["comment"] == "why is this true?"
+    by_id = {n["id"]: n for n in svc.anchored_notes()["notes"]}
+    assert by_id["beside"]["nearby_text"] == "the lines beside the note"
+    assert by_id["elsewhere"]["nearby_text"] == ""
+    assert NEARBY_HALF_HEIGHT > 8  # the band is wider than the icon itself
 
 
-def test_pdf_open_failure_degrades_to_comments_with_a_warning() -> None:
+def test_pdf_open_failure_degrades_to_the_notes_alone_with_a_warning() -> None:
     def broken(_path: str) -> FakePdf:
         raise SkimError("file moved")
 
-    backend = FakeBackend([FRONT], {FRONT.path: [note("a", text="my comment")]})
+    backend = FakeBackend([FRONT], {FRONT.path: [note("a", text="my question")]})
     ctx = ReadingService(backend, opener=broken).reading_context()
     assert ctx.png is None
     assert ctx.data["image"] is None
-    assert ctx.data["pending_underlines"][0]["comment"] == "my comment"
+    assert ctx.data["notes"][0]["text"] == "my question"
     assert any("file moved" in w for w in ctx.data["warnings"])
 
 
@@ -154,86 +168,17 @@ def test_selection_failure_is_a_warning_not_an_error() -> None:
     assert any("AppleScript timed out" in w for w in ctx.data["warnings"])
 
 
-def test_context_caps_pending_listing_and_page_text() -> None:
-    many = [
-        note(f"n{i}", bounds=Rect(72, i, 200, i + 1)) for i in range(MAX_PENDING_IN_CONTEXT + 5)
-    ]
+def test_page_text_is_capped() -> None:
     pdf = FakePdf(pages=5)
     pdf.page_text = lambda _p: "x" * (MAX_PAGE_TEXT_CHARS + 10)  # type: ignore[method-assign,assignment]
-    svc, _, _ = make({FRONT.path: many}, pdf=pdf)
+    svc, _, _ = make(pdf=pdf)
     ctx = svc.reading_context()
-    assert len(ctx.data["pending_underlines"]) == MAX_PENDING_IN_CONTEXT
-    assert ctx.data["pending_total"] == MAX_PENDING_IN_CONTEXT + 5
-    assert ctx.data["pending_truncated"] is True
     assert len(ctx.data["page_text"]) == MAX_PAGE_TEXT_CHARS
     assert ctx.data["page_text_truncated"] is True
 
 
-def test_reading_context_never_modifies_notes() -> None:
-    svc, backend, _ = make({FRONT.path: [note("a")]})
-    svc.reading_context()
-    svc.pending_underlines()
-    assert backend.recolored == [] and backend.deleted == []
-
-
-# -- mutations ---------------------------------------------------------------------------
-
-
-def test_mark_processed_recolors_only_pending_underlines_gray() -> None:
-    notes = {FRONT.path: [note("a"), note("done", color=GRAY), note("blue", color=BLUE)]}
-    svc, backend, _ = make(notes)
-    out = svc.mark_processed(["a", "done", "blue", "ghost"])
-    assert out["marked_processed"] == ["a"]
-    assert out["already_processed"] == ["done"]
-    assert {s["id"]: s["reason"] for s in out["skipped"]} == {
-        "blue": "not_a_pending_underline",
-        "ghost": "not_found",
-    }
-    assert [(p, ids) for p, ids, _ in backend.recolored] == [(FRONT.path, ("a",))]
-    assert backend.deleted == []
-    # Round trip: the note is now gray and no longer pending.
-    assert svc.pending_underlines()["count"] == 0
-
-
-def test_mark_processed_targets_the_named_document() -> None:
-    svc, backend, _ = make({BACK.path: [note("b1")], FRONT.path: [note("b1")]})
-    svc.mark_processed(["b1", "b1"], document_path=BACK.path)
-    assert [(p, ids) for p, ids, _ in backend.recolored] == [(BACK.path, ("b1",))]
-
-
-def test_clear_processed_deletes_only_listed_gray_underlines() -> None:
-    notes = {
-        FRONT.path: [
-            note("g1", color=GRAY),
-            note("g2", color=GRAY),
-            note("red"),
-            note("blue", color=BLUE),
-        ]
-    }
-    svc, backend, _ = make(notes)
-    out = svc.clear_processed(["g1", "red", "blue", "nope"])
-    assert out["cleared"] == ["g1"]
-    assert {s["id"]: s["reason"] for s in out["skipped"]} == {
-        "red": "still_pending",
-        "blue": "not_a_processed_underline",
-        "nope": "not_found",
-    }
-    assert backend.deleted == [(FRONT.path, ("g1",))]
-    assert {n.id for n in backend.notes[FRONT.path]} == {"g2", "red", "blue"}
-
-
-@pytest.mark.parametrize("method", ["mark_processed", "clear_processed"])
-def test_mutations_require_ids(method: str) -> None:
-    svc, backend, _ = make()
-    with pytest.raises(SkimError, match="at least one"):
-        getattr(svc, method)([" ", ""])
-    assert backend.recolored == [] and backend.deleted == []
-
-
-@pytest.mark.parametrize("method", ["mark_processed", "clear_processed"])
-def test_skimnotes_fallback_ids_are_never_sent_to_skim(method: str) -> None:
-    color = GRAY if method == "clear_processed" else RED
-    svc, backend, _ = make({FRONT.path: [note("skimnotes:0", color=color)]})
-    out = getattr(svc, method)(["skimnotes:0"])
-    assert out["skipped"] == [{"id": "skimnotes:0", "reason": "read_only_skimnotes_id"}]
-    assert backend.recolored == [] and backend.deleted == []
+def test_reads_are_repeatable_because_nothing_is_recorded() -> None:
+    svc, _, _ = make({FRONT.path: [note("a", text="q1"), note("b", page=2, text="q2")]})
+    first = svc.reading_context().data
+    assert svc.reading_context().data == first
+    assert svc.anchored_notes() == svc.anchored_notes()

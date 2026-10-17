@@ -6,20 +6,23 @@ parsing and orchestration logic runs in CI without macOS or Skim.
 
 from __future__ import annotations
 
+import logging
 import plistlib
 import re
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from .models import (
-    Color,
+    AnchoredNote,
     DocumentInfo,
     Rect,
     Selection,
     SkimError,
-    UnderlineNote,
 )
+
+log = logging.getLogger(__name__)
 
 RS = "\x1e"  # record separator emitted by the AppleScript snippets
 US = "\x1f"  # field separator emitted by the AppleScript snippets
@@ -31,8 +34,27 @@ SKIMNOTES_TIMEOUT_S = 25.0
 Runner = Callable[[Sequence[str], float], bytes]
 
 
+def _describe(argv: Sequence[str]) -> str:
+    """The command without its ``-e <script line>`` pairs: executable, paths, ids and flags."""
+    shown: list[str] = []
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+        elif arg == "-e":
+            skip = True
+        else:
+            shown.append(arg)
+    return " ".join(repr(a) for a in shown)
+
+
 def run_process(argv: Sequence[str], timeout: float) -> bytes:
-    """Default runner: execute ``argv`` and return stdout bytes."""
+    """Default runner: execute ``argv`` and return stdout bytes.
+
+    Failures are logged with the complete stderr. Stdout (which carries document text) is never
+    logged, only its size.
+    """
+    started = time.monotonic()
     try:
         proc = subprocess.run(
             list(argv),
@@ -41,16 +63,41 @@ def run_process(argv: Sequence[str], timeout: float) -> bytes:
             check=False,
         )
     except FileNotFoundError as exc:
+        log.error("%s not found: %s", argv[0], exc)
         raise SkimError(f"'{argv[0]}' was not found; this server needs macOS with Skim.") from exc
     except subprocess.TimeoutExpired as exc:
+        stderr = (exc.stderr or b"").decode("utf-8", "replace").strip()
+        log.error(
+            "%s timed out after %.0fs; args: %s; stderr: %s",
+            argv[0],
+            timeout,
+            _describe(argv),
+            stderr,
+        )
         raise SkimError(
             f"'{argv[0]}' did not answer within {timeout:.0f}s. If Skim is running, macOS may be "
             "waiting for you to approve Automation access (System Settings > Privacy & Security "
             "> Automation) for the app that launched this server."
         ) from exc
+    elapsed_ms = (time.monotonic() - started) * 1000
     if proc.returncode != 0:
         detail = proc.stderr.decode("utf-8", "replace").strip() or f"exit status {proc.returncode}"
+        log.error(
+            "%s failed with exit status %d after %.0f ms; args: %s; stderr: %s",
+            argv[0],
+            proc.returncode,
+            elapsed_ms,
+            _describe(argv),
+            detail,
+        )
         raise SkimError(f"'{argv[0]}' failed: {detail}")
+    log.debug(
+        "%s ok in %.0f ms; args: %s; %d bytes of stdout",
+        argv[0],
+        elapsed_ms,
+        _describe(argv),
+        len(proc.stdout),
+    )
     return proc.stdout
 
 
@@ -63,14 +110,8 @@ class SkimBackend(Protocol):
     def get_selection(self, path: str) -> Selection:
         """Live text selection of the document at ``path`` (empty when there is none)."""
 
-    def list_underlines(self, path: str) -> list[UnderlineNote]:
-        """Every underline note in the document, any colour."""
-
-    def recolor_underlines(self, path: str, ids: Sequence[str], color: Color) -> dict[str, str]:
-        """Recolor underline notes by id; returns id -> ok|missing|not_underline."""
-
-    def delete_underlines(self, path: str, ids: Sequence[str]) -> dict[str, str]:
-        """Delete underline notes by id; returns id -> ok|missing|not_underline."""
+    def list_notes(self, path: str) -> list[AnchoredNote]:
+        """Every anchored note in the document, any icon."""
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +220,7 @@ end run
 """
 )
 
-_LIST_UNDERLINES = (
+_LIST_NOTES = (
     _HELPERS
     + """\
 on run argv
@@ -192,83 +233,24 @@ on run argv
     set d to document idx
     repeat with n in (notes of d)
       try
-        if (type of n) is underline note then
+        if (type of n) is anchored note then
+          set x to ""
+          try
+            set x to (extended text of n) as text
+          end try
           set t to ""
           try
             set t to (text of n) as text
           end try
+          set ic to ""
+          try
+            set ic to (icon of n) as text
+          end try
           set pn to index of (page of n)
           set bb to my flat(bounds of n)
-          set cc to my flat(color of n)
-          set out to out & (id of n) & US & pn & US & bb & US & cc & US & t & RS
+          set out to out & (id of n) & US & pn & US & bb & US & ic & US & x & US & t & RS
         end if
       end try
-    end repeat
-  end tell
-  return out
-end run
-"""
-)
-
-_RECOLOR = (
-    _HELPERS
-    + """\
-on run argv
-  set RS to character id 30
-  set US to character id 31
-  set idx to my findDoc(item 1 of argv)
-  if idx is 0 then error "document not found"
-  set newColor to {}
-  repeat with k from 2 to 5
-    set end of newColor to (item k of argv) as integer
-  end repeat
-  set out to ""
-  tell application "Skim"
-    set d to document idx
-    repeat with k from 6 to count of argv
-      set nid to item k of argv
-      set status to "missing"
-      try
-        set n to first note of d whose id is nid
-        if (type of n) is underline note then
-          set color of n to newColor
-          set status to "ok"
-        else
-          set status to "not_underline"
-        end if
-      end try
-      set out to out & nid & US & status & RS
-    end repeat
-  end tell
-  return out
-end run
-"""
-)
-
-_DELETE = (
-    _HELPERS
-    + """\
-on run argv
-  set RS to character id 30
-  set US to character id 31
-  set idx to my findDoc(item 1 of argv)
-  if idx is 0 then error "document not found"
-  set out to ""
-  tell application "Skim"
-    set d to document idx
-    repeat with k from 2 to count of argv
-      set nid to item k of argv
-      set status to "missing"
-      try
-        set n to first note of d whose id is nid
-        if (type of n) is underline note then
-          delete n
-          set status to "ok"
-        else
-          set status to "not_underline"
-        end if
-      end try
-      set out to out & nid & US & status & RS
     end repeat
   end tell
   return out
@@ -311,7 +293,7 @@ def _union_rects(numbers: list[float]) -> Rect | None:
 
 
 class AppleScriptBackend:
-    """Reads and edits Skim through ``osascript``; notes reads fall back to ``skimnotes``."""
+    """Reads Skim through ``osascript``; notes reads fall back to ``skimnotes``. Never writes."""
 
     def __init__(
         self,
@@ -356,48 +338,39 @@ class AppleScriptBackend:
         page = int(pages[0]) if pages and pages[0] >= 1 else None
         return Selection(text=text, page=page, bounds=_union_rects(parse_numbers(rect_blob)))
 
-    def list_underlines(self, path: str) -> list[UnderlineNote]:
+    def list_notes(self, path: str) -> list[AnchoredNote]:
         try:
-            return _parse_underlines(self._osa(_LIST_UNDERLINES, path))
-        except SkimError:
+            return _parse_notes(self._osa(_LIST_NOTES, path))
+        except SkimError as exc:
             if self._fallback is None:
                 raise
+            log.warning(
+                "Listing notes of %s via AppleScript failed (%s); trying skimnotes", path, exc
+            )
             return self._fallback.read(path)
 
-    def recolor_underlines(self, path: str, ids: Sequence[str], color: Color) -> dict[str, str]:
-        if not ids:
-            return {}
-        r, g, b, a = color.to_skim16()
-        raw = self._osa(_RECOLOR, path, str(r), str(g), str(b), str(a), *ids)
-        return {rec[0]: rec[1] for rec in _records(raw) if len(rec) >= 2}
 
-    def delete_underlines(self, path: str, ids: Sequence[str]) -> dict[str, str]:
-        if not ids:
-            return {}
-        raw = self._osa(_DELETE, path, *ids)
-        return {rec[0]: rec[1] for rec in _records(raw) if len(rec) >= 2}
-
-
-def _parse_underlines(raw: str) -> list[UnderlineNote]:
-    notes: list[UnderlineNote] = []
+def _parse_notes(raw: str) -> list[AnchoredNote]:
+    notes: list[AnchoredNote] = []
     for rec in _records(raw):
-        if len(rec) < 4:
+        if len(rec) < 3:
             continue
-        note_id, page_blob, bounds_blob, color_blob = rec[:4]
+        note_id, page_blob, bounds_blob = rec[:3]
+        icon = rec[3].removesuffix(" icon") if len(rec) > 3 else ""
         text = rec[4] if len(rec) > 4 else ""
+        quoted_text = rec[5] if len(rec) > 5 else ""
         pages = parse_numbers(page_blob)
         nums = parse_numbers(bounds_blob)
-        rgba = parse_numbers(color_blob)
-        if not pages or len(nums) < 4 or len(rgba) < 3:
+        if not pages or len(nums) < 4:
             continue
-        rgba = [*rgba[:4], *([65535.0] if len(rgba) == 3 else [])]
         notes.append(
-            UnderlineNote(
+            AnchoredNote(
                 id=note_id,
                 page=int(pages[0]),
                 bounds=Rect.from_corners(*nums[:4]),
-                color=Color.from_skim16(*rgba),
+                icon=icon,
                 text=text,
+                quoted_text=quoted_text,
             )
         )
     return notes
@@ -410,12 +383,15 @@ def _parse_underlines(raw: str) -> list[UnderlineNote]:
 _RECT_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
+ICON_NAMES = ("comment", "key", "note", "help", "new paragraph", "paragraph", "insert")
+
+
 class SkimNotesReader:
-    """Reads saved underline notes with ``skimnotes get -format plist``.
+    """Reads saved anchored notes with ``skimnotes get -format plist``.
 
     The CLI reads the notes Skim last saved to the PDF's extended attributes, so it can lag
     behind unsaved edits. Ids are synthesised from the note order and are only meaningful to
-    this reader; the CLI cannot modify notes.
+    this reader.
     """
 
     ID_PREFIX = "skimnotes:"
@@ -424,41 +400,132 @@ class SkimNotesReader:
         self._run = runner
         self._exe = executable
 
-    def read(self, path: str) -> list[UnderlineNote]:
+    def read(self, path: str) -> list[AnchoredNote]:
         raw = self._run([self._exe, "get", "-format", "plist", path, "-"], SKIMNOTES_TIMEOUT_S)
         return parse_skimnotes_plist(raw)
 
 
-def parse_skimnotes_plist(data: bytes) -> list[UnderlineNote]:
+def parse_skimnotes_plist(data: bytes) -> list[AnchoredNote]:
     if not data:
         return []
     try:
         items = plistlib.loads(data)
     except (plistlib.InvalidFileException, ValueError, OSError) as exc:
         raise SkimError(f"Could not parse skimnotes output: {exc}") from exc
-    notes: list[UnderlineNote] = []
+    notes: list[AnchoredNote] = []
     if not isinstance(items, list):
         return notes
     for index, item in enumerate(items):
-        if not isinstance(item, dict) or item.get("type") != "Underline":
+        if not isinstance(item, dict) or item.get("type") != "Note":
             continue
         rect = _RECT_RE.findall(str(item.get("bounds", "")))
-        color = item.get("color")
-        if len(rect) != 4 or not isinstance(color, list) or len(color) < 3:
+        if len(rect) != 4:
             continue
         try:
             x, y, w, h = (float(v) for v in rect)
-            rgba = [float(c) for c in color[:4]] + [1.0] * (4 - len(color[:4]))
             page_no = int(item.get("pageIndex", 0)) + 1
+            icon_index = int(item.get("iconType", 2))
         except (ValueError, TypeError, OverflowError):
             continue
         notes.append(
-            UnderlineNote(
+            AnchoredNote(
                 id=f"{SkimNotesReader.ID_PREFIX}{index}",
                 page=page_no,
                 bounds=Rect(x, y, x + w, y + h),
-                color=Color(*rgba[:4]),
-                text=str(item.get("contents", "") or ""),
+                icon=ICON_NAMES[icon_index] if 0 <= icon_index < len(ICON_NAMES) else "",
+                text=_rtf_field(item.get("text")),
+                quoted_text=str(item.get("contents", "") or ""),
             )
         )
     return notes
+
+
+def _rtf_field(value: object) -> str:
+    if isinstance(value, bytes):
+        return rtf_to_text(value)
+    return str(value or "")
+
+
+_RTF_SKIPPED_DESTINATIONS = frozenset(
+    {"fonttbl", "colortbl", "expandedcolortbl", "stylesheet", "info", "pict", "header", "footer"}
+)
+_RTF_TOKEN = re.compile(
+    rb"\\(?P<hex>'[0-9a-fA-F]{2})"
+    rb"|\\(?P<word>[a-zA-Z]+)(?P<num>-?\d+)? ?"
+    rb"|\\(?P<sym>[^a-zA-Z])"
+    rb"|(?P<open>\{)|(?P<close>\})"
+    rb"|(?P<text>[^\\{}\r\n]+)"
+)
+
+
+def rtf_to_text(data: bytes) -> str:
+    """Plain text of an RTF document, as written by Skim for an anchored note's body.
+
+    Handles the control words Cocoa emits: paragraph/line/tab breaks, ``\\'hh`` and ``\\uN``
+    characters, and header groups (fonts, colors, styles) which carry no text. Unknown control
+    words are ignored.
+    """
+    out: list[str] = []
+    skip_depth = 0  # >0 while inside a group that carries no text
+    depth = 0
+    skip_from: list[int] = []
+    pending_ignorable = False
+    pending_unicode_skip = 0
+    for match in _RTF_TOKEN.finditer(data):
+        if match.group("open"):
+            depth += 1
+            pending_ignorable = True
+            pending_unicode_skip = 0
+        elif match.group("close"):
+            if skip_from and skip_from[-1] == depth:
+                skip_from.pop()
+                skip_depth -= 1
+            depth -= 1
+            pending_ignorable = False
+            pending_unicode_skip = 0
+        elif match.group("word") is not None:
+            word = match.group("word").decode("ascii")
+            if pending_ignorable and word in _RTF_SKIPPED_DESTINATIONS and not skip_depth:
+                skip_from.append(depth)
+                skip_depth += 1
+            pending_ignorable = False
+            pending_unicode_skip = 0
+            if skip_depth:
+                continue
+            if word in ("par", "line"):
+                out.append("\n")
+            elif word == "tab":
+                out.append("\t")
+            elif word == "u" and match.group("num") is not None:
+                code = int(match.group("num"))
+                out.append(chr(code % 65536))
+                pending_unicode_skip = 1  # the fallback character that follows
+        elif match.group("sym") is not None:
+            sym = match.group("sym")
+            if sym == b"*" and pending_ignorable and not skip_depth:
+                skip_from.append(depth)  # an ignorable destination: ``{\*\name ...}``
+                skip_depth += 1
+            pending_ignorable = False
+            if pending_unicode_skip:
+                pending_unicode_skip = 0
+            elif not skip_depth and sym in (b"\\", b"{", b"}"):
+                out.append(sym.decode("ascii"))
+        elif match.group("hex") is not None:
+            pending_ignorable = False
+            if pending_unicode_skip:
+                pending_unicode_skip = 0
+            elif not skip_depth:
+                out.append(bytes([int(match.group("hex")[1:], 16)]).decode("cp1252", "replace"))
+        else:
+            pending_ignorable = False
+            if pending_unicode_skip and skip_depth:
+                pending_unicode_skip = 0
+                continue
+            if skip_depth:
+                continue
+            chunk = match.group("text").decode("cp1252", "replace")
+            if pending_unicode_skip:
+                chunk = chunk[pending_unicode_skip:]
+                pending_unicode_skip = 0
+            out.append(chunk)
+    return "".join(out).strip()

@@ -20,7 +20,7 @@ _SHRINK_STEPS = 5
 _SHRINK_FACTOR = 0.7
 
 RGB = tuple[int, int, int]
-PENDING_RGB: RGB = (220, 30, 30)
+NOTE_RGB: RGB = (235, 120, 10)
 SELECTION_RGB: RGB = (20, 90, 230)
 
 
