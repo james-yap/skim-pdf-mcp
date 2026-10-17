@@ -13,6 +13,7 @@ src/skim_pdf_mcp/
   service.py   ReadingService: document resolution, context assembly, mark/clear guards
   server.py    FastMCP tools, annotations, CLI (stdio | http)
 tests/         fakes.py (FakeBackend, FakePdf), conftest.py (sample_pdf, --live-skim), test_*.py
+.github/workflows/ci.yml   Ubuntu CI on Python 3.10/3.12/3.13: ruff check, ruff format --check, mypy, pytest
 ```
 
 Data flow: tool (`server.py`) → `ReadingService` → `SkimBackend` (Skim) + `PdfDocument` (file on disk).
