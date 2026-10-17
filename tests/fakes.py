@@ -15,6 +15,7 @@ from skim_pdf_mcp.models import (
 )
 from skim_pdf_mcp.pdf import DEFAULT_DPI, Overlay, RenderedPage
 
+GREEN = Color(0.0, 1.0, 0.0)
 RED = Color(1.0, 0.0, 0.0)
 GRAY = Color(0.5, 0.5, 0.5)
 BLUE = Color(0.0, 0.0, 1.0)
@@ -23,7 +24,7 @@ BLUE = Color(0.0, 0.0, 1.0)
 def note(
     note_id: str,
     page: int = 1,
-    color: Color = RED,
+    color: Color = GREEN,
     text: str = "",
     bounds: Rect | None = None,
 ) -> UnderlineNote:
@@ -53,6 +54,8 @@ class FakeBackend:
         self.recolored: list[tuple[str, tuple[str, ...], Color]] = []
         self.deleted: list[tuple[str, tuple[str, ...]]] = []
         self.selection_error: SkimError | None = None
+        self.recolor_error: SkimError | None = None
+        self.recolor_refused: set[str] = set()  # ids Skim reports "missing" for
 
     def list_documents(self) -> tuple[list[DocumentInfo], list[str]]:
         return list(self.documents), list(self.warnings)
@@ -67,8 +70,13 @@ class FakeBackend:
 
     def recolor_underlines(self, path: str, ids: Sequence[str], color: Color) -> dict[str, str]:
         self.recolored.append((path, tuple(ids), color))
+        if self.recolor_error:
+            raise self.recolor_error
         out = {}
         for note_id in ids:
+            if note_id in self.recolor_refused:
+                out[note_id] = "missing"
+                continue
             out[note_id] = "ok"
             self.notes[path] = [
                 UnderlineNote(n.id, n.page, n.bounds, color, n.text) if n.id == note_id else n

@@ -37,7 +37,7 @@ def backend(sample_pdf: Path) -> FakeBackend:
         [doc],
         notes={
             str(sample_pdf): [
-                note("red-1", text="why?", bounds=Rect(70, 688, 200, 708)),
+                note("green-1", text="why?", bounds=Rect(70, 688, 200, 708)),
                 note("gray-1", color=GRAY, bounds=Rect(70, 588, 200, 608)),
             ]
         },
@@ -57,12 +57,13 @@ def test_tool_surface_and_annotations(backend: FakeBackend) -> None:
         "mark_processed",
         "clear_processed",
     }
-    for name in ("get_open_documents", "get_reading_context", "get_pending_underlines"):
-        assert tools[name].read_only_hint is True
-    for name in ("mark_processed", "clear_processed"):
+    for name in ("get_reading_context", "get_pending_underlines", "mark_processed"):
         assert tools[name].read_only_hint is False
+        assert tools[name].destructive_hint is False
+        assert tools[name].idempotent_hint is True
+    assert tools["get_open_documents"].read_only_hint is True
+    assert tools["clear_processed"].read_only_hint is False
     assert tools["clear_processed"].destructive_hint is True
-    assert tools["mark_processed"].destructive_hint is False
 
 
 def test_reading_context_returns_json_text_and_one_png_page(backend: FakeBackend) -> None:
@@ -81,23 +82,32 @@ def test_reading_context_returns_json_text_and_one_png_page(backend: FakeBackend
     data = result.structured_content
     assert data is not None
     assert data["selection"]["text"] == "world"
-    assert [u["id"] for u in data["pending_underlines"]] == ["red-1"]
+    assert [u["id"] for u in data["pending_underlines"]] == ["green-1"]
     assert data["pending_underlines"][0]["quoted_text"] == "Hello world of math"
     assert data["pending_underlines"][0]["comment"] == "why?"
     assert "Hello world of math" in data["page_text"]
 
 
-def test_mark_then_clear_round_trip_through_the_tools(backend: FakeBackend) -> None:
+def test_reading_marks_what_it_returns_then_clear_round_trip_through_the_tools(
+    backend: FakeBackend,
+) -> None:
     async def call(client: Client[Any]) -> tuple[Any, Any, Any]:
-        marked = await client.call_tool("mark_processed", {"ids": ["red-1"]})
+        read = await client.call_tool("get_reading_context", {})
         pending = await client.call_tool("get_pending_underlines", {})
-        cleared = await client.call_tool("clear_processed", {"ids": ["red-1", "gray-1"]})
-        return marked.structured_content, pending.structured_content, cleared.structured_content
+        cleared = await client.call_tool("clear_processed", {"ids": ["green-1", "gray-1"]})
+        return read.structured_content, pending.structured_content, cleared.structured_content
 
-    marked, pending, cleared = run_client(backend, call)
-    assert marked["marked_processed"] == ["red-1"]
+    read, pending, cleared = run_client(backend, call)
+    assert read["marked_processed"] == ["green-1"]
     assert pending["count"] == 0
-    assert sorted(cleared["cleared"]) == ["gray-1", "red-1"]
+    assert sorted(cleared["cleared"]) == ["gray-1", "green-1"]
+
+
+def test_mark_processed_tool_recolors_by_id(backend: FakeBackend) -> None:
+    async def call(client: Client[Any]) -> Any:
+        return (await client.call_tool("mark_processed", {"ids": ["green-1"]})).structured_content
+
+    assert run_client(backend, call)["marked_processed"] == ["green-1"]
 
 
 def test_skim_errors_reach_the_caller_as_tool_errors() -> None:

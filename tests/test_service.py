@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import pytest
 
-from skim_pdf_mcp.models import DocumentInfo, Rect, Selection, SkimError, UnderlineNote
+from skim_pdf_mcp.models import (
+    PROCESSED_COLOR,
+    DocumentInfo,
+    Rect,
+    Selection,
+    SkimError,
+    UnderlineNote,
+    UnderlineStatus,
+)
 from skim_pdf_mcp.pdf import PENDING_RGB, SELECTION_RGB
 from skim_pdf_mcp.service import MAX_PAGE_TEXT_CHARS, MAX_PENDING_IN_CONTEXT, ReadingService
 
-from fakes import BLUE, GRAY, RED, FakeBackend, FakePdf, note
+from fakes import BLUE, GRAY, GREEN, RED, FakeBackend, FakePdf, note
 
 FRONT = DocumentInfo("front.pdf", "/docs/front.pdf", page_count=5, current_page=3)
 BACK = DocumentInfo("back.pdf", "/docs/back.pdf", page_count=2, current_page=1)
@@ -169,11 +177,74 @@ def test_context_caps_pending_listing_and_page_text() -> None:
     assert ctx.data["page_text_truncated"] is True
 
 
-def test_reading_context_never_modifies_notes() -> None:
-    svc, backend, _ = make({FRONT.path: [note("a")]})
+def test_reading_context_marks_exactly_the_listed_pending_underlines_gray() -> None:
+    many = [
+        note(f"n{i}", bounds=Rect(72, i, 200, i + 1)) for i in range(MAX_PENDING_IN_CONTEXT + 5)
+    ]
+    many += [note("done", color=GRAY), note("red", color=RED), note("blue", color=BLUE)]
+    svc, backend, _ = make({FRONT.path: many})
+    ctx = svc.reading_context()
+    listed = [u["id"] for u in ctx.data["pending_underlines"]]
+    assert len(listed) == MAX_PENDING_IN_CONTEXT
+    assert ctx.data["marked_processed"] == listed
+    (call,) = backend.recolored
+    assert call == (FRONT.path, tuple(listed), PROCESSED_COLOR)
+    # The truncated tail stays pending for the next read; foreign colors are untouched.
+    assert ctx.data["pending_truncated"] is True
+    assert svc.pending_underlines()["count"] == 5
+    assert backend.deleted == []
+    assert {n.id: n.color for n in backend.notes[FRONT.path] if n.id in ("red", "blue")} == {
+        "red": RED,
+        "blue": BLUE,
+    }
+
+
+def test_page_image_outlines_the_underlines_delivered_even_though_they_are_gray_afterwards() -> (
+    None
+):
+    svc, backend, pdf = make({FRONT.path: [note("a", page=3), note("b", page=1)]})
     svc.reading_context()
-    svc.pending_underlines()
-    assert backend.recolored == [] and backend.deleted == []
+    _, overlays = pdf.render_calls[0]
+    assert [o.color for o in overlays] == [PENDING_RGB]  # "a" is on the rendered page 3
+    assert all(n.status is UnderlineStatus.PROCESSED for n in backend.notes[FRONT.path])
+
+
+def test_pending_listing_marks_everything_it_returns() -> None:
+    svc, backend, _ = make({FRONT.path: [note("a"), note("b"), note("done", color=GRAY)]})
+    out = svc.pending_underlines()
+    assert [u["id"] for u in out["underlines"]] == ["a", "b"]
+    assert out["marked_processed"] == ["a", "b"]
+    assert [ids for _, ids, _ in backend.recolored] == [("a", "b")]
+    assert svc.pending_underlines()["underlines"] == []
+
+
+@pytest.mark.parametrize("reading", ["context", "listing"])
+def test_failed_auto_mark_still_returns_everything_and_names_the_ids(reading: str) -> None:
+    svc, backend, _ = make({FRONT.path: [note("a"), note("b")]})
+    backend.recolor_refused = {"b"}
+    out = svc.reading_context().data if reading == "context" else svc.pending_underlines()
+    key = "pending_underlines" if reading == "context" else "underlines"
+    assert [u["id"] for u in out[key]] == ["a", "b"]
+    assert out["marked_processed"] == ["a"]
+    (warning,) = out["warnings"]
+    assert "b" in warning and "a," not in warning
+
+
+def test_auto_mark_error_becomes_a_warning_not_a_failure() -> None:
+    svc, backend, _ = make({FRONT.path: [note("a"), note("b")]})
+    backend.recolor_error = SkimError("osascript failed: boom")
+    out = svc.pending_underlines()
+    assert [u["id"] for u in out["underlines"]] == ["a", "b"]
+    assert out["marked_processed"] == []
+    assert any("a, b" in w and "boom" in w for w in out["warnings"])
+
+
+def test_skimnotes_fallback_ids_are_not_sent_to_skim_when_reading() -> None:
+    svc, backend, _ = make({FRONT.path: [note("skimnotes:0"), note("real")]})
+    out = svc.pending_underlines()
+    assert out["marked_processed"] == ["real"]
+    assert [ids for _, ids, _ in backend.recolored] == [("real",)]
+    assert any("skimnotes:0" in w for w in out["warnings"])
 
 
 # -- mutations ---------------------------------------------------------------------------
@@ -206,20 +277,20 @@ def test_clear_processed_deletes_only_listed_gray_underlines() -> None:
         FRONT.path: [
             note("g1", color=GRAY),
             note("g2", color=GRAY),
-            note("red"),
+            note("green"),
             note("blue", color=BLUE),
         ]
     }
     svc, backend, _ = make(notes)
-    out = svc.clear_processed(["g1", "red", "blue", "nope"])
+    out = svc.clear_processed(["g1", "green", "blue", "nope"])
     assert out["cleared"] == ["g1"]
     assert {s["id"]: s["reason"] for s in out["skipped"]} == {
-        "red": "still_pending",
+        "green": "still_pending",
         "blue": "not_a_processed_underline",
         "nope": "not_found",
     }
     assert backend.deleted == [(FRONT.path, ("g1",))]
-    assert {n.id for n in backend.notes[FRONT.path]} == {"g2", "red", "blue"}
+    assert {n.id for n in backend.notes[FRONT.path]} == {"g2", "green", "blue"}
 
 
 @pytest.mark.parametrize("method", ["mark_processed", "clear_processed"])
@@ -232,7 +303,7 @@ def test_mutations_require_ids(method: str) -> None:
 
 @pytest.mark.parametrize("method", ["mark_processed", "clear_processed"])
 def test_skimnotes_fallback_ids_are_never_sent_to_skim(method: str) -> None:
-    color = GRAY if method == "clear_processed" else RED
+    color = GRAY if method == "clear_processed" else GREEN
     svc, backend, _ = make({FRONT.path: [note("skimnotes:0", color=color)]})
     out = getattr(svc, method)(["skimnotes:0"])
     assert out["skipped"] == [{"id": "skimnotes:0", "reason": "read_only_skimnotes_id"}]

@@ -6,9 +6,11 @@ parsing and orchestration logic runs in CI without macOS or Skim.
 
 from __future__ import annotations
 
+import logging
 import plistlib
 import re
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
@@ -21,6 +23,8 @@ from .models import (
     UnderlineNote,
 )
 
+log = logging.getLogger(__name__)
+
 RS = "\x1e"  # record separator emitted by the AppleScript snippets
 US = "\x1f"  # field separator emitted by the AppleScript snippets
 
@@ -31,8 +35,27 @@ SKIMNOTES_TIMEOUT_S = 25.0
 Runner = Callable[[Sequence[str], float], bytes]
 
 
+def _describe(argv: Sequence[str]) -> str:
+    """The command without its ``-e <script line>`` pairs: executable, paths, ids and flags."""
+    shown: list[str] = []
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+        elif arg == "-e":
+            skip = True
+        else:
+            shown.append(arg)
+    return " ".join(repr(a) for a in shown)
+
+
 def run_process(argv: Sequence[str], timeout: float) -> bytes:
-    """Default runner: execute ``argv`` and return stdout bytes."""
+    """Default runner: execute ``argv`` and return stdout bytes.
+
+    Failures are logged with the complete stderr. Stdout (which carries document text) is never
+    logged, only its size.
+    """
+    started = time.monotonic()
     try:
         proc = subprocess.run(
             list(argv),
@@ -41,16 +64,41 @@ def run_process(argv: Sequence[str], timeout: float) -> bytes:
             check=False,
         )
     except FileNotFoundError as exc:
+        log.error("%s not found: %s", argv[0], exc)
         raise SkimError(f"'{argv[0]}' was not found; this server needs macOS with Skim.") from exc
     except subprocess.TimeoutExpired as exc:
+        stderr = (exc.stderr or b"").decode("utf-8", "replace").strip()
+        log.error(
+            "%s timed out after %.0fs; args: %s; stderr: %s",
+            argv[0],
+            timeout,
+            _describe(argv),
+            stderr,
+        )
         raise SkimError(
             f"'{argv[0]}' did not answer within {timeout:.0f}s. If Skim is running, macOS may be "
             "waiting for you to approve Automation access (System Settings > Privacy & Security "
             "> Automation) for the app that launched this server."
         ) from exc
+    elapsed_ms = (time.monotonic() - started) * 1000
     if proc.returncode != 0:
         detail = proc.stderr.decode("utf-8", "replace").strip() or f"exit status {proc.returncode}"
+        log.error(
+            "%s failed with exit status %d after %.0f ms; args: %s; stderr: %s",
+            argv[0],
+            proc.returncode,
+            elapsed_ms,
+            _describe(argv),
+            detail,
+        )
         raise SkimError(f"'{argv[0]}' failed: {detail}")
+    log.debug(
+        "%s ok in %.0f ms; args: %s; %d bytes of stdout",
+        argv[0],
+        elapsed_ms,
+        _describe(argv),
+        len(proc.stdout),
+    )
     return proc.stdout
 
 
@@ -227,17 +275,17 @@ on run argv
     set d to document idx
     repeat with k from 6 to count of argv
       set nid to item k of argv
-      set status to "missing"
+      set outcome to "missing"
       try
         set n to first note of d whose id is nid
         if (type of n) is underline note then
           set color of n to newColor
-          set status to "ok"
+          set outcome to "ok"
         else
-          set status to "not_underline"
+          set outcome to "not_underline"
         end if
       end try
-      set out to out & nid & US & status & RS
+      set out to out & nid & US & outcome & RS
     end repeat
   end tell
   return out
@@ -258,17 +306,17 @@ on run argv
     set d to document idx
     repeat with k from 2 to count of argv
       set nid to item k of argv
-      set status to "missing"
+      set outcome to "missing"
       try
         set n to first note of d whose id is nid
         if (type of n) is underline note then
           delete n
-          set status to "ok"
+          set outcome to "ok"
         else
-          set status to "not_underline"
+          set outcome to "not_underline"
         end if
       end try
-      set out to out & nid & US & status & RS
+      set out to out & nid & US & outcome & RS
     end repeat
   end tell
   return out
@@ -359,9 +407,12 @@ class AppleScriptBackend:
     def list_underlines(self, path: str) -> list[UnderlineNote]:
         try:
             return _parse_underlines(self._osa(_LIST_UNDERLINES, path))
-        except SkimError:
+        except SkimError as exc:
             if self._fallback is None:
                 raise
+            log.warning(
+                "Listing underlines of %s via AppleScript failed (%s); trying skimnotes", path, exc
+            )
             return self._fallback.read(path)
 
     def recolor_underlines(self, path: str, ids: Sequence[str], color: Color) -> dict[str, str]:

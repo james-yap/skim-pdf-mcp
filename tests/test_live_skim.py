@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from skim_pdf_mcp.models import Color, UnderlineNote
 from skim_pdf_mcp.service import ReadingService
 from skim_pdf_mcp.skim import AppleScriptBackend, SkimNotesReader
 
@@ -47,4 +48,32 @@ def test_listing_agrees_with_an_independent_osascript_query() -> None:
     for doc in listed["documents"]:
         assert doc["name"] in reported
         assert doc["path"].endswith(".pdf")
-        assert svc.pending_underlines(doc["path"])["document"]["path"] == doc["path"]
+        # Reading notes through the backend: ReadingService.pending_underlines would recolor.
+        assert isinstance(AppleScriptBackend().list_underlines(doc["path"]), list)
+
+
+def _front_with_underline() -> tuple[AppleScriptBackend, str, UnderlineNote]:
+    backend = AppleScriptBackend()
+    docs, _ = backend.list_documents()
+    if not docs:
+        pytest.skip("Skim has no saved PDF open")
+    notes = backend.list_underlines(docs[0].path)
+    if not notes:
+        pytest.skip("the front document has no underline to recolor")
+    return backend, docs[0].path, notes[0]
+
+
+def test_recolor_script_runs_in_skim_and_a_same_color_recolor_changes_nothing() -> None:
+    """Runs the _RECOLOR script (Skim reserves words such as ``status``) without altering the
+    reader's notes: the underline is set to the color it already has."""
+    backend, path, note = _front_with_underline()
+    assert backend.recolor_underlines(path, [note.id], note.color) == {note.id: "ok"}
+    after = next(n for n in backend.list_underlines(path) if n.id == note.id)
+    assert after.color.to_skim16() == note.color.to_skim16()
+
+
+def test_recolor_and_delete_scripts_report_an_unknown_id_as_missing() -> None:
+    backend, path, _ = _front_with_underline()
+    ghost = "no-such-note-id"
+    assert backend.recolor_underlines(path, [ghost], Color(0.5, 0.5, 0.5)) == {ghost: "missing"}
+    assert backend.delete_underlines(path, [ghost]) == {ghost: "missing"}

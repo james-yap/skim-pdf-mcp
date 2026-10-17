@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from collections.abc import Callable, Sequence
@@ -26,10 +27,13 @@ from .pdf import (
 )
 from .skim import SkimBackend, SkimNotesReader
 
+log = logging.getLogger(__name__)
+
 MAX_PENDING_IN_CONTEXT = 50
 MAX_PAGE_TEXT_CHARS = 8000
 IMAGE_LEGEND = (
-    "Blue outline = live selection; red outlines = pending underlines on this page. "
+    "Blue outline = live selection; green outlines = the underlines listed in this response on "
+    "this page (they have just been marked processed). "
     "The image is the ground truth for math; the text layer can garble formulas."
 )
 
@@ -97,6 +101,7 @@ class ReadingService:
                         if 1 <= note.page <= pdf.page_count:
                             quotes[note.id] = pdf.text_in_rect(note.page, note.bounds)
             except SkimError as exc:
+                log.warning("Quoted text unavailable for %s: %s", doc.path, exc)
                 warnings.append(f"Quoted text unavailable: {exc}")
         entries = []
         for note in notes:
@@ -121,14 +126,47 @@ class ReadingService:
         notes = [n for n in self._backend.list_underlines(doc.path) if n.status is status]
         return sorted(notes, key=_reading_order)
 
+    def _mark_delivered(
+        self, doc: DocumentInfo, delivered: Sequence[UnderlineNote], warnings: list[str]
+    ) -> list[str]:
+        """Recolor the pending underlines just returned to the caller gray.
+
+        Returns the ids that were marked. A failure never fails the read: the affected ids stay
+        pending in Skim and are named in ``warnings``.
+        """
+        ids = [n.id for n in delivered]
+        writable = [i for i in ids if not i.startswith(SkimNotesReader.ID_PREFIX)]
+        outcomes: dict[str, str] = {}
+        reason = " (skimnotes fallback ids are read-only)" if len(writable) < len(ids) else ""
+        if writable:
+            try:
+                outcomes = self._backend.recolor_underlines(doc.path, writable, PROCESSED_COLOR)
+            except SkimError as exc:
+                reason = f": {exc}"
+                log.error("Could not mark %s processed in %s: %s", writable, doc.path, exc)
+        marked = [i for i in ids if outcomes.get(i) == "ok"]
+        failed = [i for i in ids if i not in marked]
+        if marked:
+            log.info("Marked %d underline(s) processed in %s: %s", len(marked), doc.path, marked)
+        if failed:
+            log.warning("Left %d underline(s) pending in %s: %s", len(failed), doc.path, failed)
+            warnings.append(
+                "Could not mark these underlines processed; they are still pending in Skim: "
+                f"{', '.join(failed)}{reason}"
+            )
+        return marked
+
     def pending_underlines(self, document_path: str | None = None) -> dict[str, Any]:
         doc = self._resolve(document_path)
         warnings: list[str] = []
         pending = self._underlines(doc, UnderlineStatus.PENDING)
+        entries = self._enrich(doc, pending, warnings)
+        marked = self._mark_delivered(doc, pending, warnings)
         return {
             "document": doc.to_dict(),
             "count": len(pending),
-            "underlines": self._enrich(doc, pending, warnings),
+            "underlines": entries,
+            "marked_processed": marked,
             "warnings": warnings,
         }
 
@@ -144,6 +182,7 @@ class ReadingService:
             selection = self._backend.get_selection(doc.path)
         except SkimError as exc:
             selection = Selection()
+            log.warning("Selection unavailable for %s: %s", doc.path, exc)
             warnings.append(f"Selection unavailable: {exc}")
 
         if page is not None and not 1 <= page <= max(doc.page_count, 1):
@@ -159,6 +198,7 @@ class ReadingService:
         pending = self._underlines(doc, UnderlineStatus.PENDING)
         listed = pending[:MAX_PENDING_IN_CONTEXT]
         entries = self._enrich(doc, listed, warnings)
+        marked = self._mark_delivered(doc, listed, warnings)
 
         page_text, truncated = "", False
         png: bytes | None = None
@@ -167,7 +207,7 @@ class ReadingService:
             with self._open(doc.path) as pdf:
                 page_text = pdf.page_text(shown)
                 if render:
-                    overlays = [Overlay(n.bounds, PENDING_RGB) for n in pending if n.page == shown]
+                    overlays = [Overlay(n.bounds, PENDING_RGB) for n in listed if n.page == shown]
                     if selection.present and selection.bounds and selection.page == shown:
                         overlays.append(Overlay(selection.bounds, SELECTION_RGB))
                     rendered = pdf.render(shown, overlays, DEFAULT_DPI)
@@ -180,6 +220,7 @@ class ReadingService:
                         "legend": IMAGE_LEGEND,
                     }
         except SkimError as exc:
+            log.warning("Page image unavailable for %s: %s", doc.path, exc)
             warnings.append(f"Page image unavailable: {exc}")
         if len(page_text) > MAX_PAGE_TEXT_CHARS:
             page_text, truncated = page_text[:MAX_PAGE_TEXT_CHARS], True
@@ -190,6 +231,7 @@ class ReadingService:
             "selection": selection.to_dict(),
             "pending_underlines": entries,
             "pending_total": len(pending),
+            "marked_processed": marked,
             "pending_truncated": len(pending) > len(listed),
             "page_text": page_text,
             "page_text_truncated": truncated,
@@ -203,7 +245,7 @@ class ReadingService:
     def mark_processed(
         self, ids: Sequence[str], document_path: str | None = None
     ) -> dict[str, Any]:
-        """Recolor pending (red) underlines gray. Nothing else is touched."""
+        """Recolor pending (green) underlines gray. Nothing else is touched."""
         wanted = _dedupe(ids)
         doc = self._resolve(document_path)
         by_id = {n.id: n for n in self._backend.list_underlines(doc.path)}

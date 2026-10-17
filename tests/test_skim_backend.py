@@ -93,7 +93,7 @@ def test_get_selection_without_page_or_rects_keeps_text() -> None:
 
 
 def test_list_underlines_parses_sixteen_bit_colors_and_comma_decimals() -> None:
-    raw = rec("id-1", "2", "72;690;200;706;", "65535;0;0;65535;", "why?") + rec(
+    raw = rec("id-1", "2", "72;690;200;706;", "0;65535;0;65535;", "why?") + rec(
         "id-2", "5", "10,5;20;30;40;", "32768;32768;32768;65535;", ""
     )
     notes = AppleScriptBackend(ScriptedRunner({"osascript": raw.encode()})).list_underlines("/a")
@@ -141,7 +141,7 @@ def _plist_notes() -> bytes:
             "type": "Underline",
             "pageIndex": 0,
             "bounds": "{{72, 680}, {100, 16}}",
-            "color": [1.0, 0.0, 0.0, 1.0],
+            "color": [0.0, 1.0, 0.0, 1.0],
             "contents": "my comment",
             "string": "Hello world",
             "quadrilateralPoints": ["{72, 696}", "{172, 696}", "{72, 680}", "{172, 680}"],
