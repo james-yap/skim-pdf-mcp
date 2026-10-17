@@ -18,7 +18,7 @@ from skim_pdf_mcp.logs import (
     resolve_log_path,
     shutdown_logging,
 )
-from skim_pdf_mcp.models import DocumentInfo, Rect, Selection, SkimError, UnderlineNote
+from skim_pdf_mcp.models import AnchoredNote, DocumentInfo, Rect, Selection, SkimError
 from skim_pdf_mcp.pdf import open_pdf
 from skim_pdf_mcp.server import build_server
 from skim_pdf_mcp.service import ReadingService
@@ -27,11 +27,11 @@ from skim_pdf_mcp.skim import run_process
 from fakes import FakeBackend, note
 
 STDERR_DETAIL = (
-    'execution error: Skim got an error: Can\'t set status to "missing". (-10006)\n'
+    "execution error: Skim got an error: Application is not running. (-600)\n"
     "second line of osascript stderr"
 )
 COMMENT = "SECRET-COMMENT-TEXT"
-QUOTE = "Hello world of math"  # the text under the underline in the sample PDF
+QUOTE = "Hello world of math"  # the text under the lines beside the note in the sample PDF
 
 
 @pytest.fixture
@@ -64,12 +64,12 @@ def sample_backend(sample_pdf: Path) -> FakeBackend:
 
 
 class FailingListBackend(FakeBackend):
-    """A backend whose underline listing fails the way a refused osascript call does."""
+    """A backend whose note listing fails the way a refused osascript call does."""
 
     def __init__(self, inner: FakeBackend) -> None:
         super().__init__(inner.documents, inner.notes, inner.selections)
 
-    def list_underlines(self, path: str) -> list[UnderlineNote]:
+    def list_notes(self, path: str) -> list[AnchoredNote]:
         raise SkimError(f"'osascript' failed: {STDERR_DETAIL}")
 
 
@@ -80,12 +80,12 @@ def test_failing_tool_call_logs_full_error_and_no_document_content(
     assert not ok.is_error
 
     failing = FailingListBackend(sample_backend(sample_pdf))
-    result = call_tool(failing, "get_pending_underlines")
+    result = call_tool(failing, "get_anchored_notes")
     assert result.is_error
 
     text = log_file.read_text(encoding="utf-8")
     assert "tool=get_reading_context outcome=ok" in text
-    assert "tool=get_pending_underlines outcome=error" in text
+    assert "tool=get_anchored_notes outcome=error" in text
     assert STDERR_DETAIL in text  # both stderr lines, untruncated
     assert "Traceback" in text
     for content in (COMMENT, QUOTE, "text of page"):

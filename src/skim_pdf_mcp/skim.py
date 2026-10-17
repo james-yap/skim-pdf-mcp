@@ -15,12 +15,11 @@ from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from .models import (
-    Color,
+    AnchoredNote,
     DocumentInfo,
     Rect,
     Selection,
     SkimError,
-    UnderlineNote,
 )
 
 log = logging.getLogger(__name__)
@@ -111,14 +110,8 @@ class SkimBackend(Protocol):
     def get_selection(self, path: str) -> Selection:
         """Live text selection of the document at ``path`` (empty when there is none)."""
 
-    def list_underlines(self, path: str) -> list[UnderlineNote]:
-        """Every underline note in the document, any colour."""
-
-    def recolor_underlines(self, path: str, ids: Sequence[str], color: Color) -> dict[str, str]:
-        """Recolor underline notes by id; returns id -> ok|missing|not_underline."""
-
-    def delete_underlines(self, path: str, ids: Sequence[str]) -> dict[str, str]:
-        """Delete underline notes by id; returns id -> ok|missing|not_underline."""
+    def list_notes(self, path: str) -> list[AnchoredNote]:
+        """Every anchored note in the document, any icon."""
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +220,7 @@ end run
 """
 )
 
-_LIST_UNDERLINES = (
+_LIST_NOTES = (
     _HELPERS
     + """\
 on run argv
@@ -240,83 +233,20 @@ on run argv
     set d to document idx
     repeat with n in (notes of d)
       try
-        if (type of n) is underline note then
+        if (type of n) is anchored note then
           set t to ""
           try
             set t to (text of n) as text
           end try
+          set ic to ""
+          try
+            set ic to (icon of n) as text
+          end try
           set pn to index of (page of n)
           set bb to my flat(bounds of n)
-          set cc to my flat(color of n)
-          set out to out & (id of n) & US & pn & US & bb & US & cc & US & t & RS
+          set out to out & (id of n) & US & pn & US & bb & US & ic & US & t & RS
         end if
       end try
-    end repeat
-  end tell
-  return out
-end run
-"""
-)
-
-_RECOLOR = (
-    _HELPERS
-    + """\
-on run argv
-  set RS to character id 30
-  set US to character id 31
-  set idx to my findDoc(item 1 of argv)
-  if idx is 0 then error "document not found"
-  set newColor to {}
-  repeat with k from 2 to 5
-    set end of newColor to (item k of argv) as integer
-  end repeat
-  set out to ""
-  tell application "Skim"
-    set d to document idx
-    repeat with k from 6 to count of argv
-      set nid to item k of argv
-      set outcome to "missing"
-      try
-        set n to first note of d whose id is nid
-        if (type of n) is underline note then
-          set color of n to newColor
-          set outcome to "ok"
-        else
-          set outcome to "not_underline"
-        end if
-      end try
-      set out to out & nid & US & outcome & RS
-    end repeat
-  end tell
-  return out
-end run
-"""
-)
-
-_DELETE = (
-    _HELPERS
-    + """\
-on run argv
-  set RS to character id 30
-  set US to character id 31
-  set idx to my findDoc(item 1 of argv)
-  if idx is 0 then error "document not found"
-  set out to ""
-  tell application "Skim"
-    set d to document idx
-    repeat with k from 2 to count of argv
-      set nid to item k of argv
-      set outcome to "missing"
-      try
-        set n to first note of d whose id is nid
-        if (type of n) is underline note then
-          delete n
-          set outcome to "ok"
-        else
-          set outcome to "not_underline"
-        end if
-      end try
-      set out to out & nid & US & outcome & RS
     end repeat
   end tell
   return out
@@ -359,7 +289,7 @@ def _union_rects(numbers: list[float]) -> Rect | None:
 
 
 class AppleScriptBackend:
-    """Reads and edits Skim through ``osascript``; notes reads fall back to ``skimnotes``."""
+    """Reads Skim through ``osascript``; notes reads fall back to ``skimnotes``. Never writes."""
 
     def __init__(
         self,
@@ -404,50 +334,36 @@ class AppleScriptBackend:
         page = int(pages[0]) if pages and pages[0] >= 1 else None
         return Selection(text=text, page=page, bounds=_union_rects(parse_numbers(rect_blob)))
 
-    def list_underlines(self, path: str) -> list[UnderlineNote]:
+    def list_notes(self, path: str) -> list[AnchoredNote]:
         try:
-            return _parse_underlines(self._osa(_LIST_UNDERLINES, path))
+            return _parse_notes(self._osa(_LIST_NOTES, path))
         except SkimError as exc:
             if self._fallback is None:
                 raise
             log.warning(
-                "Listing underlines of %s via AppleScript failed (%s); trying skimnotes", path, exc
+                "Listing notes of %s via AppleScript failed (%s); trying skimnotes", path, exc
             )
             return self._fallback.read(path)
 
-    def recolor_underlines(self, path: str, ids: Sequence[str], color: Color) -> dict[str, str]:
-        if not ids:
-            return {}
-        r, g, b, a = color.to_skim16()
-        raw = self._osa(_RECOLOR, path, str(r), str(g), str(b), str(a), *ids)
-        return {rec[0]: rec[1] for rec in _records(raw) if len(rec) >= 2}
 
-    def delete_underlines(self, path: str, ids: Sequence[str]) -> dict[str, str]:
-        if not ids:
-            return {}
-        raw = self._osa(_DELETE, path, *ids)
-        return {rec[0]: rec[1] for rec in _records(raw) if len(rec) >= 2}
-
-
-def _parse_underlines(raw: str) -> list[UnderlineNote]:
-    notes: list[UnderlineNote] = []
+def _parse_notes(raw: str) -> list[AnchoredNote]:
+    notes: list[AnchoredNote] = []
     for rec in _records(raw):
-        if len(rec) < 4:
+        if len(rec) < 3:
             continue
-        note_id, page_blob, bounds_blob, color_blob = rec[:4]
+        note_id, page_blob, bounds_blob = rec[:3]
+        icon = rec[3].removesuffix(" icon") if len(rec) > 3 else ""
         text = rec[4] if len(rec) > 4 else ""
         pages = parse_numbers(page_blob)
         nums = parse_numbers(bounds_blob)
-        rgba = parse_numbers(color_blob)
-        if not pages or len(nums) < 4 or len(rgba) < 3:
+        if not pages or len(nums) < 4:
             continue
-        rgba = [*rgba[:4], *([65535.0] if len(rgba) == 3 else [])]
         notes.append(
-            UnderlineNote(
+            AnchoredNote(
                 id=note_id,
                 page=int(pages[0]),
                 bounds=Rect.from_corners(*nums[:4]),
-                color=Color.from_skim16(*rgba),
+                icon=icon,
                 text=text,
             )
         )
@@ -461,12 +377,15 @@ def _parse_underlines(raw: str) -> list[UnderlineNote]:
 _RECT_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
+ICON_NAMES = ("comment", "key", "note", "help", "new paragraph", "paragraph", "insert")
+
+
 class SkimNotesReader:
-    """Reads saved underline notes with ``skimnotes get -format plist``.
+    """Reads saved anchored notes with ``skimnotes get -format plist``.
 
     The CLI reads the notes Skim last saved to the PDF's extended attributes, so it can lag
     behind unsaved edits. Ids are synthesised from the note order and are only meaningful to
-    this reader; the CLI cannot modify notes.
+    this reader.
     """
 
     ID_PREFIX = "skimnotes:"
@@ -475,40 +394,39 @@ class SkimNotesReader:
         self._run = runner
         self._exe = executable
 
-    def read(self, path: str) -> list[UnderlineNote]:
+    def read(self, path: str) -> list[AnchoredNote]:
         raw = self._run([self._exe, "get", "-format", "plist", path, "-"], SKIMNOTES_TIMEOUT_S)
         return parse_skimnotes_plist(raw)
 
 
-def parse_skimnotes_plist(data: bytes) -> list[UnderlineNote]:
+def parse_skimnotes_plist(data: bytes) -> list[AnchoredNote]:
     if not data:
         return []
     try:
         items = plistlib.loads(data)
     except (plistlib.InvalidFileException, ValueError, OSError) as exc:
         raise SkimError(f"Could not parse skimnotes output: {exc}") from exc
-    notes: list[UnderlineNote] = []
+    notes: list[AnchoredNote] = []
     if not isinstance(items, list):
         return notes
     for index, item in enumerate(items):
-        if not isinstance(item, dict) or item.get("type") != "Underline":
+        if not isinstance(item, dict) or item.get("type") != "Note":
             continue
         rect = _RECT_RE.findall(str(item.get("bounds", "")))
-        color = item.get("color")
-        if len(rect) != 4 or not isinstance(color, list) or len(color) < 3:
+        if len(rect) != 4:
             continue
         try:
             x, y, w, h = (float(v) for v in rect)
-            rgba = [float(c) for c in color[:4]] + [1.0] * (4 - len(color[:4]))
             page_no = int(item.get("pageIndex", 0)) + 1
+            icon_index = int(item.get("iconType", 2))
         except (ValueError, TypeError, OverflowError):
             continue
         notes.append(
-            UnderlineNote(
+            AnchoredNote(
                 id=f"{SkimNotesReader.ID_PREFIX}{index}",
                 page=page_no,
                 bounds=Rect(x, y, x + w, y + h),
-                color=Color(*rgba[:4]),
+                icon=ICON_NAMES[icon_index] if 0 <= icon_index < len(ICON_NAMES) else "",
                 text=str(item.get("contents", "") or ""),
             )
         )

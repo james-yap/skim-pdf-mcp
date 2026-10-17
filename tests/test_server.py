@@ -17,7 +17,7 @@ from skim_pdf_mcp.pdf import open_pdf
 from skim_pdf_mcp.server import _parse_args, build_server
 from skim_pdf_mcp.service import ReadingService
 
-from fakes import GRAY, FakeBackend, note
+from fakes import FakeBackend, note
 
 
 def run_client(backend: FakeBackend, call: Callable[[Client[Any]], Awaitable[Any]]) -> Any:
@@ -37,33 +37,23 @@ def backend(sample_pdf: Path) -> FakeBackend:
         [doc],
         notes={
             str(sample_pdf): [
-                note("red-1", text="why?", bounds=Rect(70, 688, 200, 708)),
-                note("gray-1", color=GRAY, bounds=Rect(70, 588, 200, 608)),
+                note("n1", text="why?", icon="help", bounds=Rect(560, 688, 576, 704)),
+                note("n2", page=2, text="and here?", icon="key"),
             ]
         },
         selections={str(sample_pdf): Selection("world", 1, Rect(100, 688, 150, 708))},
     )
 
 
-def test_tool_surface_and_annotations(backend: FakeBackend) -> None:
+def test_tool_surface_is_read_only(backend: FakeBackend) -> None:
     async def call(client: Client[Any]) -> dict[str, Any]:
         return {t.name: t.annotations for t in await client.list_tools()}
 
     tools = run_client(backend, call)
-    assert set(tools) == {
-        "get_open_documents",
-        "get_reading_context",
-        "get_pending_underlines",
-        "mark_processed",
-        "clear_processed",
-    }
-    for name in ("get_reading_context", "get_pending_underlines", "mark_processed"):
-        assert tools[name].read_only_hint is False
-        assert tools[name].destructive_hint is False
-        assert tools[name].idempotent_hint is True
-    assert tools["get_open_documents"].read_only_hint is True
-    assert tools["clear_processed"].read_only_hint is False
-    assert tools["clear_processed"].destructive_hint is True
+    assert set(tools) == {"get_open_documents", "get_reading_context", "get_anchored_notes"}
+    for hints in tools.values():
+        assert hints.read_only_hint is True
+        assert hints.destructive_hint is False
 
 
 def test_reading_context_returns_json_text_and_one_png_page(backend: FakeBackend) -> None:
@@ -82,33 +72,24 @@ def test_reading_context_returns_json_text_and_one_png_page(backend: FakeBackend
     data = result.structured_content
     assert data is not None
     assert data["selection"]["text"] == "world"
-    assert [u["id"] for u in data["pending_underlines"]] == ["red-1"]
-    assert data["pending_underlines"][0]["quoted_text"] == "Hello world of math"
-    assert data["pending_underlines"][0]["comment"] == "why?"
+    # Every note of the document comes back, including the one on the page that is not shown.
+    assert [(n["id"], n["page"], n["icon"], n["text"]) for n in data["notes"]] == [
+        ("n1", 1, "help", "why?"),
+        ("n2", 2, "key", "and here?"),
+    ]
+    assert "Hello world of math" in data["notes"][0]["nearby_text"]
     assert "Hello world of math" in data["page_text"]
 
 
-def test_reading_marks_what_it_returns_then_clear_round_trip_through_the_tools(
-    backend: FakeBackend,
-) -> None:
-    async def call(client: Client[Any]) -> tuple[Any, Any, Any]:
-        read = await client.call_tool("get_reading_context", {})
-        pending = await client.call_tool("get_pending_underlines", {})
-        cleared = await client.call_tool("clear_processed", {"ids": ["red-1", "gray-1"]})
-        return read.structured_content, pending.structured_content, cleared.structured_content
+def test_anchored_notes_tool_is_repeatable(backend: FakeBackend) -> None:
+    async def call(client: Client[Any]) -> tuple[Any, Any]:
+        first = await client.call_tool("get_anchored_notes", {})
+        second = await client.call_tool("get_anchored_notes", {})
+        return first.structured_content, second.structured_content
 
-    read, pending, cleared = run_client(backend, call)
-    assert read["marked_processed"] == ["red-1"]
-    assert [(u["id"], u["recently_marked"]) for u in pending["underlines"]] == [("red-1", True)]
-    assert pending["marked_processed"] == []
-    assert sorted(cleared["cleared"]) == ["gray-1", "red-1"]
-
-
-def test_mark_processed_tool_recolors_by_id(backend: FakeBackend) -> None:
-    async def call(client: Client[Any]) -> Any:
-        return (await client.call_tool("mark_processed", {"ids": ["red-1"]})).structured_content
-
-    assert run_client(backend, call)["marked_processed"] == ["red-1"]
+    first, second = run_client(backend, call)
+    assert first == second
+    assert first["count"] == 2
 
 
 def test_skim_errors_reach_the_caller_as_tool_errors() -> None:

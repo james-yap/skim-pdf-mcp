@@ -33,30 +33,27 @@ from .skim import AppleScriptBackend, SkimNotesReader
 log = logging.getLogger(__name__)
 
 INSTRUCTIONS = """\
-Bridges the Skim PDF reader to ChatGPT. The reader marks passages to ask about with RED \
-underlines (pending) in Skim; processed ones are GRAY. Highlights and other markup belong to \
-the reader and are never touched.
+Bridges the Skim PDF reader to ChatGPT. The reader leaves questions and comments for you as \
+ANCHORED NOTES in Skim: note icons (any icon: comment, key, note, help, ...) pinned to a spot \
+on a page, each holding the reader's text.
 
-Typical flow: call get_reading_context to see the front document, current page, live selection, \
-pending underlines and a rendered page image. Answer the reader's questions. Reading marks the \
-pending underlines it returns as processed (gray) in the same call, so there is nothing to \
-approve or confirm; the response lists them in marked_processed, and any that could not be \
-marked are named in warnings. A repeated read within 10 minutes lists the underlines just \
-marked again with recently_marked true: they are the same underlines the reader asked about, \
-already gray, not new ones. mark_processed re-marks specific ids by hand. clear_processed \
-permanently deletes gray underlines and must always be approved by the reader first.
+Whenever this server is invoked, even with no specific request, do this without asking first: \
+call get_reading_context. It returns the front document, the page being read, the live \
+selection, the page's text and an image of the page, and EVERY anchored note in the whole \
+document in reading order (page, then top to bottom), each with its text, its page, its icon, \
+the page text level with it (nearby_text) and its position. Then address ALL of the notes, in \
+order, one by one: answer the question or respond to the comment in each note, saying which page \
+and passage it is pinned to. Do not skip any, do not stop at the current page, and do not ask \
+which one to start with. The page image is the ground truth for math; the text layer can garble \
+formulas. Other markup (highlights, underlines, text boxes) is not addressed to you.
+
+This server is strictly read-only: it never changes the document and keeps no record of what it \
+has returned, so reading again returns the same notes. Use get_anchored_notes for the notes \
+alone, for another document, or to re-read them; get_open_documents lists the open PDFs.
 """
 
 _READ_ONLY: dict[str, Any] = {
     "readOnlyHint": True,
-    "destructiveHint": False,
-    "idempotentHint": True,
-    "openWorldHint": False,
-}
-
-# Reading tools recolor the pending underlines they return, so they modify the document.
-_MARKS_PROCESSED: dict[str, Any] = {
-    "readOnlyHint": False,
     "destructiveHint": False,
     "idempotentHint": True,
     "openWorldHint": False,
@@ -116,29 +113,23 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
         """List open Skim PDFs, frontmost first, with warnings for skipped path lookups."""
         return svc.open_documents()
 
-    @mcp.tool(title="Get reading context", annotations=_MARKS_PROCESSED)
+    @mcp.tool(title="Get reading context", annotations=_READ_ONLY)
     @_tool_errors
     def get_reading_context(
         document_path: str | None = None,
         page: int | None = None,
         include_image: bool = True,
     ) -> ToolResult:
-        """Everything about what the reader is looking at, in one call.
+        """START HERE whenever the reader invokes this server. Returns everything, then address
+        EVERY anchored note it lists, in order, without asking which to start with.
 
         Returns the front document (name, path), its current page, the live text selection
-        (explicitly empty when nothing is selected), pending red underlines with their quoted
-        text, page, color and comment, the page's text layer, and a PNG of the page with the
-        selection (blue, only when it is on the rendered page) and the listed underlines on
-        that page (red) outlined. The image is the ground truth for math; the text layer
-        may garble formulas.
-
-        MODIFIES the reader's Skim document: the pending underlines returned in this response
-        (at most 50; pending_truncated says if more remain) are recolored gray (processed) in
-        the same call, with no further approval. The ids that were marked are in
-        marked_processed; ones that could not be marked are named in warnings. Underlines
-        marked by an earlier read in the last 10 minutes are listed again with
-        recently_marked true (they stay gray and are not marked twice), so calling this tool
-        twice in one conversation does not hide them.
+        (explicitly empty when nothing is selected), the page's text layer, a PNG of the page
+        with the selection (blue, only when it is on the rendered page) and the anchored notes
+        on that page (orange) outlined, and every anchored note in the whole document in
+        reading order: its text (what the reader wrote), page, icon, nearby_text (the page text
+        level with the note) and position. The image is the ground truth for math; the text
+        layer may garble formulas. Read-only: nothing is modified.
 
         Args:
             document_path: Path of an open document (see get_open_documents). Default: front.
@@ -151,61 +142,17 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
             content.append(Image(data=ctx.png, format="png"))
         return ToolResult(content=content, structured_content=ctx.data)
 
-    @mcp.tool(title="Get pending underlines", annotations=_MARKS_PROCESSED)
+    @mcp.tool(title="Get anchored notes", annotations=_READ_ONLY)
     @_tool_errors
-    def get_pending_underlines(document_path: str | None = None) -> dict[str, Any]:
-        """List pending (red) underlines of a document in reading order, with quoted text.
-
-        MODIFIES the reader's Skim document: every underline returned is recolored gray
-        (processed) in the same call, with no further approval. The ids that were marked are
-        in marked_processed; ones that could not be marked are named in warnings. Underlines
-        marked by an earlier read in the last 10 minutes are listed again with
-        recently_marked true (they stay gray and are not marked twice), so calling this tool
-        twice in one conversation does not hide them.
+    def get_anchored_notes(document_path: str | None = None) -> dict[str, Any]:
+        """List every anchored note of a document in reading order (page, then top to bottom),
+        each with its text, page, icon, nearby_text and position. Address all of them.
+        Read-only: nothing is modified, and calling it again returns the same notes.
 
         Args:
             document_path: Path of an open document. Default: the front document.
         """
-        return svc.pending_underlines(document_path)
-
-    @mcp.tool(title="Mark underlines processed", annotations=_MARKS_PROCESSED)
-    @_tool_errors
-    def mark_processed(ids: list[str], document_path: str | None = None) -> dict[str, Any]:
-        """Recolor pending (red) underlines gray by id. MODIFIES the reader's Skim document.
-
-        Reading tools already mark the underlines they return, so this is only for re-marking
-        specific ids by hand (for example ones a read reported it could not mark). Highlights
-        and underlines of other colors are skipped, never changed. Nothing is
-        deleted.
-
-        Args:
-            ids: Underline ids from get_pending_underlines or get_reading_context.
-            document_path: Path of an open document. Default: the front document.
-        """
-        return svc.mark_processed(ids, document_path)
-
-    @mcp.tool(
-        title="Clear processed underlines",
-        annotations={
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
-    )
-    @_tool_errors
-    def clear_processed(ids: list[str], document_path: str | None = None) -> dict[str, Any]:
-        """PERMANENTLY DELETE processed (gray) underlines by id. MODIFIES the Skim document.
-
-        Only run after the reader has explicitly approved clearing these ids. Deletes exactly
-        the ids passed, and only if they are gray underlines: pending (red) underlines,
-        highlights and other markup are skipped.
-
-        Args:
-            ids: Ids of gray underlines to delete.
-            document_path: Path of an open document. Default: the front document.
-        """
-        return svc.clear_processed(ids, document_path)
+        return svc.anchored_notes(document_path)
 
     return mcp
 

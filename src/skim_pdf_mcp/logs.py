@@ -2,8 +2,8 @@
 
 Logging goes to a rotating file and to stderr (warnings and above), never to stdout: the stdio
 transport uses stdout for the MCP protocol. Only ids, page numbers, paths, tool names, timings
-and the full text of errors are logged; document text, quoted underline text, comments, page
-images and note contents are never passed to a logger.
+and the full text of errors are logged; document text, note text, nearby text, page images and
+note contents are never passed to a logger.
 """
 
 from __future__ import annotations

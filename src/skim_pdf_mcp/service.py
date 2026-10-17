@@ -1,44 +1,43 @@
-"""Reading-context orchestration: ties the Skim backend and the PDF layer together."""
+"""Reading-context orchestration: ties the Skim backend and the PDF layer together.
+
+Everything here is read-only: nothing in Skim or on disk is ever modified, and the service keeps
+no record of what it has returned. Every call reports the document as it is right now.
+"""
 
 from __future__ import annotations
 
 import logging
 import os
 import re
-import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from .models import (
-    PROCESSED_COLOR,
+    AnchoredNote,
     DocumentInfo,
+    Rect,
     Selection,
     SkimError,
-    UnderlineNote,
-    UnderlineStatus,
 )
 from .pdf import (
     DEFAULT_DPI,
-    PENDING_RGB,
+    NOTE_RGB,
     SELECTION_RGB,
     Overlay,
     PdfDocument,
     open_pdf,
 )
-from .skim import SkimBackend, SkimNotesReader
+from .skim import SkimBackend
 
 log = logging.getLogger(__name__)
 
-MAX_PENDING_IN_CONTEXT = 50
-# ChatGPT often calls a read tool twice per turn. The first call marks the underlines gray; for
-# this long afterwards reads still return them (flagged ``recently_marked``) so the repeat call
-# does not look like "nothing pending".
-RECENT_WINDOW_S = 600.0
 MAX_PAGE_TEXT_CHARS = 8000
+# Text lines level with an anchored note's icon (this many points above and below its centre)
+# are returned as ``nearby_text``: readers pin a note beside the passage it is about.
+NEARBY_HALF_HEIGHT = 24.0
 IMAGE_LEGEND = (
-    "Blue outline = live selection; red outlines = the underlines listed in this response on "
-    "this page (they have just been marked processed). "
+    "Blue outline = live selection; orange outlines = the anchored notes on this page. "
     "The image is the ground truth for math; the text layer can garble formulas."
 )
 
@@ -53,11 +52,7 @@ class ReadingContext:
     png: bytes | None
 
 
-def _norm(text: str) -> str:
-    return _WS.sub(" ", text).strip()
-
-
-def _reading_order(note: UnderlineNote) -> tuple[int, float, float]:
+def _reading_order(note: AnchoredNote) -> tuple[int, float, float]:
     return (note.page, -note.bounds.y1, note.bounds.x0)
 
 
@@ -66,13 +61,9 @@ class ReadingService:
         self,
         backend: SkimBackend,
         opener: Callable[[str], PdfDocument] = open_pdf,
-        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._backend = backend
         self._open = opener
-        self._clock = clock
-        # (document path, note id) -> when this server marked it processed
-        self._recent: dict[tuple[str, str], float] = {}
 
     # -- documents ---------------------------------------------------------------------
 
@@ -96,106 +87,47 @@ class ReadingService:
         names = ", ".join(f"'{d.path}'" for d in docs)
         raise SkimError(f"'{document_path}' is not open in Skim. Open documents: {names}.")
 
-    # -- underlines --------------------------------------------------------------------
+    # -- notes -------------------------------------------------------------------------
 
-    def _enrich(
-        self,
-        doc: DocumentInfo,
-        notes: Sequence[UnderlineNote],
-        warnings: list[str],
-        recent: frozenset[str] = frozenset(),
+    def _notes(self, doc: DocumentInfo) -> list[AnchoredNote]:
+        return sorted(self._backend.list_notes(doc.path), key=_reading_order)
+
+    def _describe(
+        self, doc: DocumentInfo, notes: Sequence[AnchoredNote], warnings: list[str]
     ) -> list[dict[str, Any]]:
-        """Attach quoted text from the PDF text layer to ``notes``."""
-        quotes: dict[str, str] = {}
+        """Note entries, each with the page text level with its anchor."""
+        nearby: dict[str, str] = {}
         if notes:
             try:
                 with self._open(doc.path) as pdf:
                     for note in notes:
                         if 1 <= note.page <= pdf.page_count:
-                            quotes[note.id] = pdf.text_in_rect(note.page, note.bounds)
+                            cy = (note.bounds.y0 + note.bounds.y1) / 2
+                            band = Rect(0, cy - NEARBY_HALF_HEIGHT, 1e6, cy + NEARBY_HALF_HEIGHT)
+                            nearby[note.id] = pdf.text_in_rect(note.page, band)
             except SkimError as exc:
-                log.warning("Quoted text unavailable for %s: %s", doc.path, exc)
-                warnings.append(f"Quoted text unavailable: {exc}")
-        entries = []
-        for note in notes:
-            quote = quotes.get(note.id, "")
-            comment = note.text.strip()
-            if _norm(comment) == _norm(quote) or (not quote and not comment):
-                comment = ""
-            entries.append(
-                {
-                    "id": note.id,
-                    "page": note.page,
-                    "quoted_text": quote,
-                    "comment": comment,
-                    "color": note.color.to_dict(),
-                    "status": note.status.value,
-                    "recently_marked": note.id in recent,
-                    "bounds": note.bounds.to_dict(),
-                }
-            )
-        return entries
+                log.warning("Nearby text unavailable for %s: %s", doc.path, exc)
+                warnings.append(f"Nearby text unavailable: {exc}")
+        return [
+            {
+                "id": note.id,
+                "page": note.page,
+                "icon": note.icon,
+                "text": note.text.strip(),
+                "nearby_text": nearby.get(note.id, ""),
+                "bounds": note.bounds.to_dict(),
+            }
+            for note in notes
+        ]
 
-    def _readable(self, doc: DocumentInfo) -> tuple[list[UnderlineNote], frozenset[str]]:
-        """Underlines a read returns: the pending ones plus those this server marked processed
-        within ``RECENT_WINDOW_S``, so a repeated call in the same conversation still sees them.
-        Returns them in reading order with the ids of the recently marked ones."""
-        now = self._clock()
-        self._recent = {k: t for k, t in self._recent.items() if now - t <= RECENT_WINDOW_S}
-        notes = self._backend.list_underlines(doc.path)
-        recent = frozenset(
-            n.id
-            for n in notes
-            if n.status is UnderlineStatus.PROCESSED and (doc.path, n.id) in self._recent
-        )
-        readable = [n for n in notes if n.status is UnderlineStatus.PENDING or n.id in recent]
-        return sorted(readable, key=_reading_order), recent
-
-    def _mark_delivered(
-        self, doc: DocumentInfo, delivered: Sequence[UnderlineNote], warnings: list[str]
-    ) -> list[str]:
-        """Recolor the pending underlines just returned to the caller gray.
-
-        Underlines already marked by an earlier read are not touched again. Returns the ids
-        marked now. A failure never fails the read: the affected ids stay pending in Skim and
-        are named in ``warnings``.
-        """
-        ids = [n.id for n in delivered if n.status is UnderlineStatus.PENDING]
-        writable = [i for i in ids if not i.startswith(SkimNotesReader.ID_PREFIX)]
-        outcomes: dict[str, str] = {}
-        reason = " (skimnotes fallback ids are read-only)" if len(writable) < len(ids) else ""
-        if writable:
-            try:
-                outcomes = self._backend.recolor_underlines(doc.path, writable, PROCESSED_COLOR)
-            except SkimError as exc:
-                reason = f": {exc}"
-                log.error("Could not mark %s processed in %s: %s", writable, doc.path, exc)
-        marked = [i for i in ids if outcomes.get(i) == "ok"]
-        failed = [i for i in ids if i not in marked]
-        now = self._clock()
-        for note_id in marked:
-            self._recent[(doc.path, note_id)] = now
-        if marked:
-            log.info("Marked %d underline(s) processed in %s: %s", len(marked), doc.path, marked)
-        if failed:
-            log.warning("Left %d underline(s) pending in %s: %s", len(failed), doc.path, failed)
-            warnings.append(
-                "Could not mark these underlines processed; they are still pending in Skim: "
-                f"{', '.join(failed)}{reason}"
-            )
-        return marked
-
-    def pending_underlines(self, document_path: str | None = None) -> dict[str, Any]:
+    def anchored_notes(self, document_path: str | None = None) -> dict[str, Any]:
         doc = self._resolve(document_path)
         warnings: list[str] = []
-        readable, recent = self._readable(doc)
-        entries = self._enrich(doc, readable, warnings, recent)
-        marked = self._mark_delivered(doc, readable, warnings)
+        notes = self._notes(doc)
         return {
             "document": doc.to_dict(),
-            "count": len(readable),
-            "underlines": entries,
-            "marked_processed": marked,
+            "count": len(notes),
+            "notes": self._describe(doc, notes, warnings),
             "warnings": warnings,
         }
 
@@ -224,10 +156,8 @@ class ReadingService:
             shown = doc.current_page
         shown = min(max(shown, 1), max(doc.page_count, 1))
 
-        readable, recent = self._readable(doc)
-        listed = readable[:MAX_PENDING_IN_CONTEXT]
-        entries = self._enrich(doc, listed, warnings, recent)
-        marked = self._mark_delivered(doc, listed, warnings)
+        notes = self._notes(doc)
+        entries = self._describe(doc, notes, warnings)
 
         page_text, truncated = "", False
         png: bytes | None = None
@@ -236,7 +166,7 @@ class ReadingService:
             with self._open(doc.path) as pdf:
                 page_text = pdf.page_text(shown)
                 if render:
-                    overlays = [Overlay(n.bounds, PENDING_RGB) for n in listed if n.page == shown]
+                    overlays = [Overlay(n.bounds, NOTE_RGB) for n in notes if n.page == shown]
                     if selection.present and selection.bounds and selection.page == shown:
                         overlays.append(Overlay(selection.bounds, SELECTION_RGB))
                     rendered = pdf.render(shown, overlays, DEFAULT_DPI)
@@ -258,92 +188,11 @@ class ReadingService:
             "document": doc.to_dict(),
             "page": shown,
             "selection": selection.to_dict(),
-            "pending_underlines": entries,
-            "pending_total": len(readable),
-            "marked_processed": marked,
-            "pending_truncated": len(readable) > len(listed),
+            "note_count": len(notes),
+            "notes": entries,
             "page_text": page_text,
             "page_text_truncated": truncated,
             "image": image,
             "warnings": warnings,
         }
         return ReadingContext(data=data, png=png)
-
-    # -- mutations ---------------------------------------------------------------------
-
-    def mark_processed(
-        self, ids: Sequence[str], document_path: str | None = None
-    ) -> dict[str, Any]:
-        """Recolor pending (red) underlines gray. Nothing else is touched."""
-        wanted = _dedupe(ids)
-        doc = self._resolve(document_path)
-        by_id = {n.id: n for n in self._backend.list_underlines(doc.path)}
-        todo: list[str] = []
-        already: list[str] = []
-        skipped: list[dict[str, str]] = []
-        for note_id in wanted:
-            note = by_id.get(note_id)
-            if note is None or note_id.startswith(SkimNotesReader.ID_PREFIX):
-                skipped.append({"id": note_id, "reason": _missing_reason(note_id)})
-            elif note.status is UnderlineStatus.PROCESSED:
-                already.append(note_id)
-            elif note.status is UnderlineStatus.PENDING:
-                todo.append(note_id)
-            else:
-                skipped.append({"id": note_id, "reason": "not_a_pending_underline"})
-        marked: list[str] = []
-        outcomes = self._backend.recolor_underlines(doc.path, todo, PROCESSED_COLOR) if todo else {}
-        for note_id in todo:
-            outcome = outcomes.get(note_id, "missing")
-            if outcome == "ok":
-                marked.append(note_id)
-            else:
-                skipped.append({"id": note_id, "reason": outcome})
-        return {
-            "document": doc.to_dict(),
-            "marked_processed": marked,
-            "already_processed": already,
-            "skipped": skipped,
-        }
-
-    def clear_processed(
-        self, ids: Sequence[str], document_path: str | None = None
-    ) -> dict[str, Any]:
-        """Delete processed (gray) underlines by id. Pending and other notes are never deleted."""
-        wanted = _dedupe(ids)
-        doc = self._resolve(document_path)
-        by_id = {n.id: n for n in self._backend.list_underlines(doc.path)}
-        todo: list[str] = []
-        skipped: list[dict[str, str]] = []
-        for note_id in wanted:
-            note = by_id.get(note_id)
-            if note is None or note_id.startswith(SkimNotesReader.ID_PREFIX):
-                skipped.append({"id": note_id, "reason": _missing_reason(note_id)})
-            elif note.status is UnderlineStatus.PROCESSED:
-                todo.append(note_id)
-            elif note.status is UnderlineStatus.PENDING:
-                skipped.append({"id": note_id, "reason": "still_pending"})
-            else:
-                skipped.append({"id": note_id, "reason": "not_a_processed_underline"})
-        cleared: list[str] = []
-        outcomes = self._backend.delete_underlines(doc.path, todo) if todo else {}
-        for note_id in todo:
-            outcome = outcomes.get(note_id, "missing")
-            if outcome == "ok":
-                cleared.append(note_id)
-            else:
-                skipped.append({"id": note_id, "reason": outcome})
-        return {"document": doc.to_dict(), "cleared": cleared, "skipped": skipped}
-
-
-def _dedupe(ids: Sequence[str]) -> list[str]:
-    unique = list(dict.fromkeys(i.strip() for i in ids if i and i.strip()))
-    if not unique:
-        raise SkimError("ids must contain at least one underline id.")
-    return unique
-
-
-def _missing_reason(note_id: str) -> str:
-    if note_id.startswith(SkimNotesReader.ID_PREFIX):
-        return "read_only_skimnotes_id"
-    return "not_found"

@@ -1,4 +1,8 @@
-"""Smoke tests against a real Skim; run with ``pytest --live-skim`` on macOS with Skim open."""
+"""Smoke tests against a real Skim; run with ``pytest --live-skim`` on macOS with Skim open.
+
+Everything here only reads: the server has no way to write, and these tests assert that the
+document's notes are identical before and after a full read.
+"""
 
 from __future__ import annotations
 
@@ -6,22 +10,39 @@ import subprocess
 
 import pytest
 
-from skim_pdf_mcp.models import Color, UnderlineNote
 from skim_pdf_mcp.service import ReadingService
 from skim_pdf_mcp.skim import AppleScriptBackend, SkimNotesReader
 
 pytestmark = pytest.mark.live_skim
 
 
-def _skim_document_names() -> str:
-    """Raw names Skim reports through a plain osascript call, independent of our snippets."""
+def _osascript(source: str) -> str:
+    """Run a plain AppleScript, independent of the snippets under test."""
     return subprocess.run(
-        ["osascript", "-e", 'tell application "Skim" to get name of every document'],
+        ["osascript", "-e", source],
         capture_output=True,
         text=True,
         timeout=25,
         check=True,
     ).stdout.strip()
+
+
+def _skim_document_names() -> str:
+    return _osascript('tell application "Skim" to get name of every document')
+
+
+def _front_note_snapshot() -> str:
+    """Every note of the front document (id, type, text, color, bounds), as Skim reports it."""
+    return _osascript(
+        'tell application "Skim"\n'
+        "set out to {}\n"
+        "repeat with n in (notes of document 1)\n"
+        "set end of out to {(id of n), ((type of n) as text), (text of n), (color of n), "
+        "(bounds of n)}\n"
+        "end repeat\n"
+        "return out as text\n"
+        "end tell"
+    )
 
 
 def test_list_documents_and_read_only_queries_work_against_front_document() -> None:
@@ -32,7 +53,7 @@ def test_list_documents_and_read_only_queries_work_against_front_document() -> N
     front = docs[0]
     assert front.page_count >= 1
     backend.get_selection(front.path)  # must not raise, even with nothing selected
-    for note in backend.list_underlines(front.path):
+    for note in backend.list_notes(front.path):
         assert note.page >= 1
 
 
@@ -48,32 +69,26 @@ def test_listing_agrees_with_an_independent_osascript_query() -> None:
     for doc in listed["documents"]:
         assert doc["name"] in reported
         assert doc["path"].endswith(".pdf")
-        # Reading notes through the backend: ReadingService.pending_underlines would recolor.
-        assert isinstance(AppleScriptBackend().list_underlines(doc["path"]), list)
 
 
-def _front_with_underline() -> tuple[AppleScriptBackend, str, UnderlineNote]:
-    backend = AppleScriptBackend()
-    docs, _ = backend.list_documents()
-    if not docs:
-        pytest.skip("Skim has no saved PDF open")
-    notes = backend.list_underlines(docs[0].path)
-    if not notes:
-        pytest.skip("the front document has no underline to recolor")
-    return backend, docs[0].path, notes[0]
-
-
-def test_recolor_script_runs_in_skim_and_a_same_color_recolor_changes_nothing() -> None:
-    """Runs the _RECOLOR script (Skim reserves words such as ``status``) without altering the
-    reader's notes: the underline is set to the color it already has."""
-    backend, path, note = _front_with_underline()
-    assert backend.recolor_underlines(path, [note.id], note.color) == {note.id: "ok"}
-    after = next(n for n in backend.list_underlines(path) if n.id == note.id)
-    assert after.color.to_skim16() == note.color.to_skim16()
-
-
-def test_recolor_and_delete_scripts_report_an_unknown_id_as_missing() -> None:
-    backend, path, _ = _front_with_underline()
-    ghost = "no-such-note-id"
-    assert backend.recolor_underlines(path, [ghost], Color(0.5, 0.5, 0.5)) == {ghost: "missing"}
-    assert backend.delete_underlines(path, [ghost]) == {ghost: "missing"}
+def test_anchored_notes_match_skim_and_a_full_read_changes_nothing() -> None:
+    reported = _skim_document_names()
+    if ".pdf" not in reported.lower():
+        pytest.skip("Skim has no PDF open")
+    before = _front_note_snapshot()
+    expected = _osascript(
+        'tell application "Skim"\n'
+        "set out to {}\n"
+        "repeat with n in (notes of document 1)\n"
+        "if (type of n) is anchored note then set end of out to (id of n)\n"
+        "end repeat\n"
+        "return out as text\n"
+        "end tell"
+    )
+    svc = ReadingService(AppleScriptBackend(notes_fallback=SkimNotesReader()))
+    context = svc.reading_context(render=False).data
+    listing = svc.anchored_notes()
+    assert [n["id"] for n in context["notes"]] == [n["id"] for n in listing["notes"]]
+    # `as text` concatenates the ids without separators, so compare them that way.
+    assert "".join(n["id"] for n in listing["notes"]) == expected
+    assert _front_note_snapshot() == before
