@@ -83,7 +83,7 @@ on findDoc(p)
   tell application "Skim"
     repeat with i from 1 to count of documents
       try
-        if (POSIX path of (file of document i)) is p then return i
+        if (path of document i) is p then return i
       end try
     end repeat
   end tell
@@ -117,14 +117,19 @@ on run argv
       try
         if containing PDF of d then
           set fp to ""
+          set fe to ""
           try
-            set fp to POSIX path of (file of d)
+            set v to path of d
+            if v is not missing value then set fp to v
+          on error m
+            set fe to m
           end try
           set cp to 0
           try
             set cp to index of current page of d
           end try
-          set out to out & (name of d) & US & fp & US & cp & US & (count of pages of d) & RS
+          set n to count of pages of d
+          set out to out & (name of d) & US & fp & US & cp & US & n & US & fe & RS
         end if
       end try
     end repeat
@@ -325,8 +330,12 @@ class AppleScriptBackend:
     def list_documents(self) -> list[DocumentInfo]:
         docs: list[DocumentInfo] = []
         for rec in _records(self._osa(_LIST_DOCUMENTS)):
-            name, path, current, count = (rec + [""] * 4)[:4]
+            name, path, current, count, path_error = (rec + [""] * 5)[:5]
             if not path:
+                if path_error:
+                    # Never let a failed lookup masquerade as "not open"; only genuinely
+                    # unsaved documents (no file, so Skim reports no path) are skipped.
+                    raise SkimError(f"Skim lists '{name}' but its path lookup failed: {path_error}")
                 continue  # unsaved documents have no file Skim could point us at
             docs.append(
                 DocumentInfo(

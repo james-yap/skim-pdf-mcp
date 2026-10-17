@@ -48,6 +48,12 @@ def test_list_documents_parses_records_and_skips_unsaved_documents() -> None:
     ]
 
 
+def test_list_documents_raises_when_a_named_document_failed_its_path_lookup() -> None:
+    raw = rec("a.pdf", "", "1", "2", "Can't make file into type specifier")
+    with pytest.raises(SkimError, match=r"a\.pdf.*path lookup failed"):
+        AppleScriptBackend(ScriptedRunner({"osascript": raw.encode()})).list_documents()
+
+
 def test_list_documents_preserves_unicode_paths() -> None:
     raw = rec("ü.pdf", "/Users/me/Ünï/ü.pdf", "1", "2")
     docs = AppleScriptBackend(ScriptedRunner({"osascript": raw.encode()})).list_documents()
