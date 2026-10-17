@@ -21,6 +21,7 @@ def note(
     text: str = "",
     icon: str = "help",
     bounds: Rect | None = None,
+    quoted_text: str = "",
 ) -> AnchoredNote:
     return AnchoredNote(
         id=note_id,
@@ -28,6 +29,7 @@ def note(
         bounds=bounds or Rect(72, 690, 88, 706),
         icon=icon,
         text=text,
+        quoted_text=quoted_text,
     )
 
 

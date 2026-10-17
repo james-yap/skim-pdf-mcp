@@ -40,8 +40,10 @@ on a page, each holding the reader's text.
 Whenever this server is invoked, even with no specific request, do this without asking first: \
 call get_reading_context. It returns the front document, the page being read, the live \
 selection, the page's text and an image of the page, and EVERY anchored note in the whole \
-document in reading order (page, then top to bottom), each with its text, its page, its icon, \
-the page text level with it (nearby_text) and its position. Then address ALL of the notes, in \
+document in reading order (page, then top to bottom), each with its text (what the reader wrote: \
+the question or comment to answer), its quoted_text (the passage the note was made from, when it \
+was created from a selection; context, not the question), its page, icon, the page text level \
+with it (nearby_text) and its position. Then address ALL of the notes, in \
 order, one by one: answer the question or respond to the comment in each note, saying which page \
 and passage it is pinned to. Do not skip any, do not stop at the current page, and do not ask \
 which one to start with. The page image is the ground truth for math; the text layer can garble \
@@ -127,9 +129,10 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
         (explicitly empty when nothing is selected), the page's text layer, a PNG of the page
         with the selection (blue, only when it is on the rendered page) and the anchored notes
         on that page (orange) outlined, and every anchored note in the whole document in
-        reading order: its text (what the reader wrote), page, icon, nearby_text (the page text
-        level with the note) and position. The image is the ground truth for math; the text
-        layer may garble formulas. Read-only: nothing is modified.
+        reading order: its text (what the reader wrote: the question or comment), quoted_text
+        (the passage the note was made from, when it was created from a selection), page, icon,
+        nearby_text (the page text level with the note) and position. The image is the ground
+        truth for math; the text layer may garble formulas. Read-only: nothing is modified.
 
         Args:
             document_path: Path of an open document (see get_open_documents). Default: front.
@@ -146,7 +149,8 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
     @_tool_errors
     def get_anchored_notes(document_path: str | None = None) -> dict[str, Any]:
         """List every anchored note of a document in reading order (page, then top to bottom),
-        each with its text, page, icon, nearby_text and position. Address all of them.
+        each with its text (what the reader wrote), quoted_text (the passage it was made from),
+        page, icon, nearby_text and position. Address all of them.
         Read-only: nothing is modified, and calling it again returns the same notes.
 
         Args:

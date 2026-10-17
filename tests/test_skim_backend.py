@@ -13,6 +13,7 @@ from skim_pdf_mcp.skim import (
     SkimNotesReader,
     parse_numbers,
     parse_skimnotes_plist,
+    rtf_to_text,
 )
 
 
@@ -92,14 +93,14 @@ def test_get_selection_without_page_or_rects_keeps_text() -> None:
     assert (sel.text, sel.page, sel.bounds) == ("just text", None, None)
 
 
-def test_list_notes_parses_icon_text_and_comma_decimals() -> None:
-    raw = rec("id-1", "2", "72;690;88;706;", "help icon", "why?\nsecond line") + rec(
-        "id-2", "5", "10,5;20;30;40;", "key icon", ""
+def test_list_notes_parses_icon_both_text_fields_and_comma_decimals() -> None:
+    raw = rec("id-1", "2", "72;690;88;706;", "help icon", "why?\nsecond line", "the passage") + rec(
+        "id-2", "5", "10,5;20;30;40;", "key icon", "", ""
     )
     notes = AppleScriptBackend(ScriptedRunner({"osascript": raw.encode()})).list_notes("/a")
-    assert [(n.id, n.page, n.icon, n.text) for n in notes] == [
-        ("id-1", 2, "help", "why?\nsecond line"),
-        ("id-2", 5, "key", ""),
+    assert [(n.id, n.page, n.icon, n.text, n.quoted_text) for n in notes] == [
+        ("id-1", 2, "help", "why?\nsecond line", "the passage"),
+        ("id-2", 5, "key", "", ""),
     ]
     assert notes[1].bounds == Rect(10.5, 20, 30, 40)
 
@@ -111,14 +112,16 @@ def test_list_notes_skips_malformed_records_and_tolerates_missing_icon_and_text(
 
 
 def _plist_notes() -> bytes:
-    # Shape produced by `skimnotes get -format plist` (verified against skimnotes 2.10.2).
+    # Shape produced by `skimnotes get -format plist` (verified against skimnotes 2.10.2): for an
+    # anchored note "contents" is Skim's text property and "text" is the RTF body.
     notes = [
         {
             "type": "Note",
             "pageIndex": 0,
             "bounds": "{{72, 680}, {16, 16}}",
-            "color": [1.0, 1.0, 0.0, 1.0],
-            "contents": "my question",
+            "color": [1.0, 1.0, 0.5, 1.0],
+            "contents": "the passage it was made from",
+            "text": SKIM_RTF,
             "iconType": 3,
         },
         {"type": "Highlight", "pageIndex": 0, "bounds": "{{0, 0}, {1, 1}}", "color": [1, 1, 0, 1]},
@@ -136,8 +139,34 @@ def test_parse_skimnotes_plist_reads_anchored_notes_only() -> None:
     notes = parse_skimnotes_plist(_plist_notes())
     assert len(notes) == 1
     note = notes[0]
-    assert (note.id, note.page, note.icon, note.text) == ("skimnotes:0", 1, "help", "my question")
+    assert (note.id, note.page, note.icon) == ("skimnotes:0", 1, "help")
+    assert note.text == "this is a mistake, right?"  # decoded from the RTF body
+    assert note.quoted_text == "the passage it was made from"  # Skim's "contents"
     assert note.bounds == Rect(72, 680, 88, 696)
+
+
+# Written by Skim 1.7.17 for an anchored note whose body is "this is a mistake, right?".
+SKIM_RTF = (
+    b"{\\rtf1\\ansi\\ansicpg1252\\cocoartf2907\n\\cocoatextscaling0\\cocoaplatform0"
+    b"{\\fonttbl\\f0\\fswiss\\fcharset0 Helvetica;}\n{\\colortbl;\\red255\\green255\\blue255;}\n"
+    b"{\\*\\expandedcolortbl;;}\n\\pard\\tx560\\tx1120\\pardirnatural\\partightenfactor0\n\n"
+    b"\\f0\\fs24 \\cf0 this is a mistake, right?}"
+)
+
+
+@pytest.mark.parametrize(
+    ("rtf", "expected"),
+    [
+        (SKIM_RTF, "this is a mistake, right?"),
+        (b"{\\rtf1\\ansi first\\par second\\line third\\tab x}", "first\nsecond\nthird\tx"),
+        (b"{\\rtf1\\ansi caf\\'e9 \\u8217? \\\\ \\{ok\\}}", "café \u2019 \\ {ok}"),
+        (b"{\\rtf1{\\*\\generator Cocoa; hidden text}shown}", "shown"),
+        (b"{\\rtf1{\\fonttbl{\\f0 Helvetica;}}{\\info{\\author nobody}}body}", "body"),
+        (b"", ""),
+    ],
+)
+def test_rtf_to_text(rtf: bytes, expected: str) -> None:
+    assert rtf_to_text(rtf) == expected
 
 
 def test_parse_skimnotes_plist_rejects_garbage() -> None:

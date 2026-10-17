@@ -88,4 +88,8 @@ class AnchoredNote:
     page: int  # 1-based
     bounds: Rect  # the icon's rectangle; its centre is the anchor point
     icon: str = ""  # comment, key, note, help, new paragraph, paragraph or insert
-    text: str = ""  # what the reader wrote in the note
+    # What the reader typed in the note's body (Skim's "extended text"): the question or comment.
+    text: str = ""
+    # Skim's own "text" property: usually the passage the note was made from (the selection that
+    # was active when the note was added), not something the reader typed.
+    quoted_text: str = ""

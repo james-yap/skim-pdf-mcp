@@ -114,6 +114,7 @@ class ReadingService:
                 "page": note.page,
                 "icon": note.icon,
                 "text": note.text.strip(),
+                "quoted_text": note.quoted_text.strip(),
                 "nearby_text": nearby.get(note.id, ""),
                 "bounds": note.bounds.to_dict(),
             }

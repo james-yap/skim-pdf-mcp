@@ -110,10 +110,12 @@ Every tool is read-only (`readOnlyHint: true`). All accept an optional `document
   "note_count": 2,
   "notes": [
     {"id": "0x1f3…", "page": 2, "icon": "help", "text": "why does this follow?",
+     "quoted_text": "the spectral gap is positive",
      "nearby_text": "the spectral gap is positive and therefore …",
      "bounds": {"x0": 540.0, "y0": 600.0, "x1": 556.0, "y1": 616.0}},
     {"id": "0x2a9…", "page": 4, "icon": "note", "text": "check the sign here",
-     "nearby_text": "…", "bounds": {"x0": 40.0, "y0": 300.0, "x1": 56.0, "y1": 316.0}}
+     "quoted_text": "", "nearby_text": "…",
+     "bounds": {"x0": 40.0, "y0": 300.0, "x1": 56.0, "y1": 316.0}}
   ],
   "page_text": "…text layer of page 4…",
   "page_text_truncated": false,
@@ -124,7 +126,7 @@ Every tool is read-only (`readOnlyHint: true`). All accept an optional `document
 
 - With nothing selected, `selection` is explicitly `{"present": false, "text": "", "page": null, "bounds": null}`. The selection outline is only drawn when the selection is on the rendered page.
 - Rectangles are in PDF points with the origin at the page's bottom-left (y grows upward). A note's rectangle is its icon; its centre is the anchor.
-- `notes` has every anchored note of the whole document, sorted by page, then top to bottom, then left to right. There is no cap. `text` is what you wrote in the note. `nearby_text` is the page text on the lines level with the icon (within 24 points above and below its centre), which is usually the passage the note sits beside; check the image for the exact spot.
+- `notes` has every anchored note of the whole document, sorted by page, then top to bottom, then left to right. There is no cap. `text` is what you typed in the note's body (the question or comment). `quoted_text` is Skim's own "text" field for the note, which Skim fills with the passage that was selected when the note was added (empty if none); it is context, not your question. `nearby_text` is the page text on the lines level with the icon (within 24 points above and below its centre), which is usually the passage the note sits beside; check the image for the exact spot.
 - `page_text` is capped at 8000 characters. Only the notes on the rendered page are outlined on the image.
 - Problems that do not prevent a useful answer (selection unreadable, image failed, nearby text unavailable) appear in `warnings` instead of failing the call.
 

@@ -95,6 +95,13 @@ def test_context_lists_every_note_of_the_whole_document_in_reading_order_for_any
     assert [n["id"] for n in svc.anchored_notes()["notes"]] == ["p1", "high", "low", "p5"]
 
 
+def test_note_reports_what_the_reader_wrote_separately_from_the_passage_it_was_made_from() -> None:
+    notes = {FRONT.path: [note("a", text="is this a mistake?", quoted_text="  the passage  ")]}
+    svc, _, _ = make(notes)
+    (entry,) = svc.reading_context().data["notes"]
+    assert (entry["text"], entry["quoted_text"]) == ("is this a mistake?", "the passage")
+
+
 def test_every_note_is_returned_however_many_there_are() -> None:
     many = [note(f"n{i}", bounds=Rect(72, i, 88, i + 1)) for i in range(120)]
     svc, _, _ = make({FRONT.path: many})

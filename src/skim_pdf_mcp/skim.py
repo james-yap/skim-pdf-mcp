@@ -234,6 +234,10 @@ on run argv
     repeat with n in (notes of d)
       try
         if (type of n) is anchored note then
+          set x to ""
+          try
+            set x to (extended text of n) as text
+          end try
           set t to ""
           try
             set t to (text of n) as text
@@ -244,7 +248,7 @@ on run argv
           end try
           set pn to index of (page of n)
           set bb to my flat(bounds of n)
-          set out to out & (id of n) & US & pn & US & bb & US & ic & US & t & RS
+          set out to out & (id of n) & US & pn & US & bb & US & ic & US & x & US & t & RS
         end if
       end try
     end repeat
@@ -354,6 +358,7 @@ def _parse_notes(raw: str) -> list[AnchoredNote]:
         note_id, page_blob, bounds_blob = rec[:3]
         icon = rec[3].removesuffix(" icon") if len(rec) > 3 else ""
         text = rec[4] if len(rec) > 4 else ""
+        quoted_text = rec[5] if len(rec) > 5 else ""
         pages = parse_numbers(page_blob)
         nums = parse_numbers(bounds_blob)
         if not pages or len(nums) < 4:
@@ -365,6 +370,7 @@ def _parse_notes(raw: str) -> list[AnchoredNote]:
                 bounds=Rect.from_corners(*nums[:4]),
                 icon=icon,
                 text=text,
+                quoted_text=quoted_text,
             )
         )
     return notes
@@ -427,7 +433,89 @@ def parse_skimnotes_plist(data: bytes) -> list[AnchoredNote]:
                 page=page_no,
                 bounds=Rect(x, y, x + w, y + h),
                 icon=ICON_NAMES[icon_index] if 0 <= icon_index < len(ICON_NAMES) else "",
-                text=str(item.get("contents", "") or ""),
+                text=_rtf_field(item.get("text")),
+                quoted_text=str(item.get("contents", "") or ""),
             )
         )
     return notes
+
+
+def _rtf_field(value: object) -> str:
+    if isinstance(value, bytes):
+        return rtf_to_text(value)
+    return str(value or "")
+
+
+_RTF_SKIPPED_DESTINATIONS = frozenset(
+    {"fonttbl", "colortbl", "expandedcolortbl", "stylesheet", "info", "pict", "header", "footer"}
+)
+_RTF_TOKEN = re.compile(
+    rb"\\(?P<hex>'[0-9a-fA-F]{2})"
+    rb"|\\(?P<word>[a-zA-Z]+)(?P<num>-?\d+)? ?"
+    rb"|\\(?P<sym>[^a-zA-Z])"
+    rb"|(?P<open>\{)|(?P<close>\})"
+    rb"|(?P<text>[^\\{}\r\n]+)"
+)
+
+
+def rtf_to_text(data: bytes) -> str:
+    """Plain text of an RTF document, as written by Skim for an anchored note's body.
+
+    Handles the control words Cocoa emits: paragraph/line/tab breaks, ``\\'hh`` and ``\\uN``
+    characters, and header groups (fonts, colors, styles) which carry no text. Unknown control
+    words are ignored.
+    """
+    out: list[str] = []
+    skip_depth = 0  # >0 while inside a group that carries no text
+    depth = 0
+    skip_from: list[int] = []
+    pending_ignorable = False
+    pending_unicode_skip = 0
+    for match in _RTF_TOKEN.finditer(data):
+        if match.group("open"):
+            depth += 1
+            pending_ignorable = True
+        elif match.group("close"):
+            if skip_from and skip_from[-1] == depth:
+                skip_from.pop()
+                skip_depth -= 1
+            depth -= 1
+            pending_ignorable = False
+        elif match.group("word") is not None:
+            word = match.group("word").decode("ascii")
+            if pending_ignorable and word in _RTF_SKIPPED_DESTINATIONS and not skip_depth:
+                skip_from.append(depth)
+                skip_depth += 1
+            pending_ignorable = False
+            if skip_depth:
+                continue
+            if word in ("par", "line"):
+                out.append("\n")
+            elif word == "tab":
+                out.append("\t")
+            elif word == "u" and match.group("num") is not None:
+                code = int(match.group("num"))
+                out.append(chr(code % 65536))
+                pending_unicode_skip = 1  # the fallback character that follows
+        elif match.group("sym") is not None:
+            sym = match.group("sym")
+            if sym == b"*" and pending_ignorable and not skip_depth:
+                skip_from.append(depth)  # an ignorable destination: ``{\*\name ...}``
+                skip_depth += 1
+            pending_ignorable = False
+            if not skip_depth and sym in (b"\\", b"{", b"}"):
+                out.append(sym.decode("ascii"))
+        elif match.group("hex") is not None:
+            pending_ignorable = False
+            if not skip_depth:
+                out.append(bytes([int(match.group("hex")[1:], 16)]).decode("cp1252", "replace"))
+        else:
+            pending_ignorable = False
+            if skip_depth:
+                continue
+            chunk = match.group("text").decode("cp1252", "replace")
+            if pending_unicode_skip:
+                chunk = chunk[pending_unicode_skip:]
+                pending_unicode_skip = 0
+            out.append(chunk)
+    return "".join(out).strip()
