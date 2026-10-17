@@ -99,7 +99,8 @@ def test_reading_marks_what_it_returns_then_clear_round_trip_through_the_tools(
 
     read, pending, cleared = run_client(backend, call)
     assert read["marked_processed"] == ["red-1"]
-    assert pending["count"] == 0
+    assert [(u["id"], u["recently_marked"]) for u in pending["underlines"]] == [("red-1", True)]
+    assert pending["marked_processed"] == []
     assert sorted(cleared["cleared"]) == ["gray-1", "red-1"]
 
 

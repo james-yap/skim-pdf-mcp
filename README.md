@@ -86,7 +86,7 @@ Tunnel limits that shape this server: a serialized response may be at most **10 
 
 Color rules: red underline = pending; neutral gray underline = processed; any other underline color, highlights and all other note types are ignored and can never be modified or deleted by this server.
 
-Because reading marks what it returns, an underline is only ever shown to ChatGPT once. To see one again, make it red again in Skim.
+Because reading marks what it returns, an underline is shown as new to ChatGPT once. Repeat reads within 10 minutes still list it, flagged `recently_marked`, so a second tool call in the same conversation does not hide it; after that, make it red again in Skim to read it again.
 
 Changes are made in the open Skim document. Save it as you normally would so Skim writes the notes to disk.
 
@@ -115,7 +115,8 @@ All tools accept an optional `document_path` (a path listed by `get_open_documen
   "pending_underlines": [
     {"id": "a1b2…", "page": 4, "quoted_text": "the spectral gap is positive",
      "comment": "why does this follow?", "color": {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0},
-     "status": "pending", "bounds": {"x0": 72.0, "y0": 600.0, "x1": 300.0, "y1": 616.0}}
+     "status": "pending", "recently_marked": false,
+     "bounds": {"x0": 72.0, "y0": 600.0, "x1": 300.0, "y1": 616.0}}
   ],
   "pending_total": 1,
   "pending_truncated": false,
@@ -131,12 +132,13 @@ All tools accept an optional `document_path` (a path listed by `get_open_documen
 - Rectangles are in PDF points with the origin at the page's bottom-left (y grows upward).
 - `quoted_text` is read from the PDF text layer under the underline; `comment` is the note's own text, empty when it merely repeats the quote. A multi-line underline is described by one bounding rectangle, so its quoted text can include neighbouring words in that box — check the image.
 - Up to 50 pending underlines are listed (`pending_truncated` tells you if there were more; they stay pending and the next read returns them, or use `get_pending_underlines` for all). `page_text` is capped at 8000 characters. Only the listed underlines that are on the rendered page are outlined on the image, in red, even though they are gray in Skim as soon as the call returns.
-- The underlines listed in `pending_underlines` are recolored gray in the same call; `marked_processed` holds the ids that were recolored. If a recolor fails, the response is still returned in full and `warnings` names the ids that stayed pending.
+- The pending underlines listed in `pending_underlines` are recolored gray in the same call; `marked_processed` holds the ids that were recolored. If a recolor fails, the response is still returned in full and `warnings` names the ids that stayed pending.
+- ChatGPT often calls a read tool twice in one turn, and the first call has already turned the underline gray. So for 10 minutes after marking, reads list those underlines again with `"recently_marked": true` (still gray, not marked twice, still outlined on the image). After that window, or after the server restarts, they are gone from reads. `pending_total` counts pending plus recently marked underlines.
 - Problems that do not prevent a useful answer (selection unreadable, image failed, recolor failed) appear in `warnings` instead of failing the call.
 
 ### `get_pending_underlines`
 
-Returns `{"document": …, "count": n, "underlines": […], "marked_processed": […], "warnings": […]}` with the same underline objects as above, sorted by page then top-to-bottom. Every underline returned is recolored gray in the same call.
+Returns `{"document": …, "count": n, "underlines": […], "marked_processed": […], "warnings": […]}` with the same underline objects as above, sorted by page then top-to-bottom. Every pending underline returned is recolored gray in the same call.
 
 ### `mark_processed` / `clear_processed`
 

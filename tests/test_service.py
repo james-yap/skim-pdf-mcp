@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from skim_pdf_mcp.models import (
@@ -12,7 +14,12 @@ from skim_pdf_mcp.models import (
     UnderlineStatus,
 )
 from skim_pdf_mcp.pdf import PENDING_RGB, SELECTION_RGB
-from skim_pdf_mcp.service import MAX_PAGE_TEXT_CHARS, MAX_PENDING_IN_CONTEXT, ReadingService
+from skim_pdf_mcp.service import (
+    MAX_PAGE_TEXT_CHARS,
+    MAX_PENDING_IN_CONTEXT,
+    RECENT_WINDOW_S,
+    ReadingService,
+)
 
 from fakes import BLUE, GRAY, GREEN, RED, FakeBackend, FakePdf, note
 
@@ -191,7 +198,9 @@ def test_reading_context_marks_exactly_the_listed_pending_underlines_gray() -> N
     assert call == (FRONT.path, tuple(listed), PROCESSED_COLOR)
     # The truncated tail stays pending for the next read; foreign colors are untouched.
     assert ctx.data["pending_truncated"] is True
-    assert svc.pending_underlines()["count"] == 5
+    second = svc.pending_underlines()  # next read: the 5 left over, plus the 50 just marked
+    assert len(second["marked_processed"]) == 5
+    assert sum(u["recently_marked"] for u in second["underlines"]) == MAX_PENDING_IN_CONTEXT
     assert backend.deleted == []
     assert {n.id: n.color for n in backend.notes[FRONT.path] if n.id in ("green", "blue")} == {
         "green": GREEN,
@@ -215,6 +224,39 @@ def test_pending_listing_marks_everything_it_returns() -> None:
     assert [u["id"] for u in out["underlines"]] == ["a", "b"]
     assert out["marked_processed"] == ["a", "b"]
     assert [ids for _, ids, _ in backend.recolored] == [("a", "b")]
+
+
+@pytest.mark.parametrize("reading", ["context", "listing"])
+def test_repeat_read_still_returns_recently_marked_underlines_without_recoloring_again(
+    reading: str,
+) -> None:
+    svc, backend, _ = make({FRONT.path: [note("a"), note("done", color=GRAY)]})
+
+    def read() -> dict[str, Any]:
+        if reading == "context":
+            return svc.reading_context().data
+        return svc.pending_underlines()
+
+    key = "pending_underlines" if reading == "context" else "underlines"
+    first = read()
+    assert first["marked_processed"] == ["a"]
+    assert [u["recently_marked"] for u in first[key]] == [False]
+    second = read()  # the same conversation turn calls the tool again
+    assert [u["id"] for u in second[key]] == ["a"]
+    assert second[key][0]["recently_marked"] is True
+    assert second[key][0]["quoted_text"] == first[key][0]["quoted_text"]
+    assert second["marked_processed"] == []
+    assert len(backend.recolored) == 1  # the gray "done" note never joins the recent ones
+
+
+def test_recently_marked_underlines_age_out_and_other_gray_notes_never_join() -> None:
+    now = [1000.0]
+    backend = FakeBackend([FRONT], {FRONT.path: [note("a"), note("done", color=GRAY)]})
+    svc = ReadingService(backend, opener=lambda _p: FakePdf(pages=5), clock=lambda: now[0])
+    svc.pending_underlines()
+    now[0] += RECENT_WINDOW_S - 1
+    assert [u["id"] for u in svc.pending_underlines()["underlines"]] == ["a"]
+    now[0] += 2
     assert svc.pending_underlines()["underlines"] == []
 
 

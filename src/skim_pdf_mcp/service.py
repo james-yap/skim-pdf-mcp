@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -30,6 +31,10 @@ from .skim import SkimBackend, SkimNotesReader
 log = logging.getLogger(__name__)
 
 MAX_PENDING_IN_CONTEXT = 50
+# ChatGPT often calls a read tool twice per turn. The first call marks the underlines gray; for
+# this long afterwards reads still return them (flagged ``recently_marked``) so the repeat call
+# does not look like "nothing pending".
+RECENT_WINDOW_S = 600.0
 MAX_PAGE_TEXT_CHARS = 8000
 IMAGE_LEGEND = (
     "Blue outline = live selection; red outlines = the underlines listed in this response on "
@@ -61,9 +66,13 @@ class ReadingService:
         self,
         backend: SkimBackend,
         opener: Callable[[str], PdfDocument] = open_pdf,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._backend = backend
         self._open = opener
+        self._clock = clock
+        # (document path, note id) -> when this server marked it processed
+        self._recent: dict[tuple[str, str], float] = {}
 
     # -- documents ---------------------------------------------------------------------
 
@@ -90,7 +99,11 @@ class ReadingService:
     # -- underlines --------------------------------------------------------------------
 
     def _enrich(
-        self, doc: DocumentInfo, notes: Sequence[UnderlineNote], warnings: list[str]
+        self,
+        doc: DocumentInfo,
+        notes: Sequence[UnderlineNote],
+        warnings: list[str],
+        recent: frozenset[str] = frozenset(),
     ) -> list[dict[str, Any]]:
         """Attach quoted text from the PDF text layer to ``notes``."""
         quotes: dict[str, str] = {}
@@ -117,24 +130,37 @@ class ReadingService:
                     "comment": comment,
                     "color": note.color.to_dict(),
                     "status": note.status.value,
+                    "recently_marked": note.id in recent,
                     "bounds": note.bounds.to_dict(),
                 }
             )
         return entries
 
-    def _underlines(self, doc: DocumentInfo, status: UnderlineStatus) -> list[UnderlineNote]:
-        notes = [n for n in self._backend.list_underlines(doc.path) if n.status is status]
-        return sorted(notes, key=_reading_order)
+    def _readable(self, doc: DocumentInfo) -> tuple[list[UnderlineNote], frozenset[str]]:
+        """Underlines a read returns: the pending ones plus those this server marked processed
+        within ``RECENT_WINDOW_S``, so a repeated call in the same conversation still sees them.
+        Returns them in reading order with the ids of the recently marked ones."""
+        now = self._clock()
+        self._recent = {k: t for k, t in self._recent.items() if now - t <= RECENT_WINDOW_S}
+        notes = self._backend.list_underlines(doc.path)
+        recent = frozenset(
+            n.id
+            for n in notes
+            if n.status is UnderlineStatus.PROCESSED and (doc.path, n.id) in self._recent
+        )
+        readable = [n for n in notes if n.status is UnderlineStatus.PENDING or n.id in recent]
+        return sorted(readable, key=_reading_order), recent
 
     def _mark_delivered(
         self, doc: DocumentInfo, delivered: Sequence[UnderlineNote], warnings: list[str]
     ) -> list[str]:
         """Recolor the pending underlines just returned to the caller gray.
 
-        Returns the ids that were marked. A failure never fails the read: the affected ids stay
-        pending in Skim and are named in ``warnings``.
+        Underlines already marked by an earlier read are not touched again. Returns the ids
+        marked now. A failure never fails the read: the affected ids stay pending in Skim and
+        are named in ``warnings``.
         """
-        ids = [n.id for n in delivered]
+        ids = [n.id for n in delivered if n.status is UnderlineStatus.PENDING]
         writable = [i for i in ids if not i.startswith(SkimNotesReader.ID_PREFIX)]
         outcomes: dict[str, str] = {}
         reason = " (skimnotes fallback ids are read-only)" if len(writable) < len(ids) else ""
@@ -146,6 +172,9 @@ class ReadingService:
                 log.error("Could not mark %s processed in %s: %s", writable, doc.path, exc)
         marked = [i for i in ids if outcomes.get(i) == "ok"]
         failed = [i for i in ids if i not in marked]
+        now = self._clock()
+        for note_id in marked:
+            self._recent[(doc.path, note_id)] = now
         if marked:
             log.info("Marked %d underline(s) processed in %s: %s", len(marked), doc.path, marked)
         if failed:
@@ -159,12 +188,12 @@ class ReadingService:
     def pending_underlines(self, document_path: str | None = None) -> dict[str, Any]:
         doc = self._resolve(document_path)
         warnings: list[str] = []
-        pending = self._underlines(doc, UnderlineStatus.PENDING)
-        entries = self._enrich(doc, pending, warnings)
-        marked = self._mark_delivered(doc, pending, warnings)
+        readable, recent = self._readable(doc)
+        entries = self._enrich(doc, readable, warnings, recent)
+        marked = self._mark_delivered(doc, readable, warnings)
         return {
             "document": doc.to_dict(),
-            "count": len(pending),
+            "count": len(readable),
             "underlines": entries,
             "marked_processed": marked,
             "warnings": warnings,
@@ -195,9 +224,9 @@ class ReadingService:
             shown = doc.current_page
         shown = min(max(shown, 1), max(doc.page_count, 1))
 
-        pending = self._underlines(doc, UnderlineStatus.PENDING)
-        listed = pending[:MAX_PENDING_IN_CONTEXT]
-        entries = self._enrich(doc, listed, warnings)
+        readable, recent = self._readable(doc)
+        listed = readable[:MAX_PENDING_IN_CONTEXT]
+        entries = self._enrich(doc, listed, warnings, recent)
         marked = self._mark_delivered(doc, listed, warnings)
 
         page_text, truncated = "", False
@@ -230,9 +259,9 @@ class ReadingService:
             "page": shown,
             "selection": selection.to_dict(),
             "pending_underlines": entries,
-            "pending_total": len(pending),
+            "pending_total": len(readable),
             "marked_processed": marked,
-            "pending_truncated": len(pending) > len(listed),
+            "pending_truncated": len(readable) > len(listed),
             "page_text": page_text,
             "page_text_truncated": truncated,
             "image": image,

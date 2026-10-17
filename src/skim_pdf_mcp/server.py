@@ -41,7 +41,9 @@ Typical flow: call get_reading_context to see the front document, current page, 
 pending underlines and a rendered page image. Answer the reader's questions. Reading marks the \
 pending underlines it returns as processed (gray) in the same call, so there is nothing to \
 approve or confirm; the response lists them in marked_processed, and any that could not be \
-marked are named in warnings. mark_processed re-marks specific ids by hand. clear_processed \
+marked are named in warnings. A repeated read within 10 minutes lists the underlines just \
+marked again with recently_marked true: they are the same underlines the reader asked about, \
+already gray, not new ones. mark_processed re-marks specific ids by hand. clear_processed \
 permanently deletes gray underlines and must always be approved by the reader first.
 """
 
@@ -133,7 +135,10 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
         MODIFIES the reader's Skim document: the pending underlines returned in this response
         (at most 50; pending_truncated says if more remain) are recolored gray (processed) in
         the same call, with no further approval. The ids that were marked are in
-        marked_processed; ones that could not be marked are named in warnings.
+        marked_processed; ones that could not be marked are named in warnings. Underlines
+        marked by an earlier read in the last 10 minutes are listed again with
+        recently_marked true (they stay gray and are not marked twice), so calling this tool
+        twice in one conversation does not hide them.
 
         Args:
             document_path: Path of an open document (see get_open_documents). Default: front.
@@ -153,7 +158,10 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
 
         MODIFIES the reader's Skim document: every underline returned is recolored gray
         (processed) in the same call, with no further approval. The ids that were marked are
-        in marked_processed; ones that could not be marked are named in warnings.
+        in marked_processed; ones that could not be marked are named in warnings. Underlines
+        marked by an earlier read in the last 10 minutes are listed again with
+        recently_marked true (they stay gray and are not marked twice), so calling this tool
+        twice in one conversation does not hide them.
 
         Args:
             document_path: Path of an open document. Default: the front document.
