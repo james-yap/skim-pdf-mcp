@@ -438,12 +438,16 @@ def parse_skimnotes_plist(data: bytes) -> list[UnderlineNote]:
         color = item.get("color")
         if len(rect) != 4 or not isinstance(color, list) or len(color) < 3:
             continue
-        x, y, w, h = (float(v) for v in rect)
-        rgba = [float(c) for c in color[:4]] + [1.0] * (4 - len(color[:4]))
+        try:
+            x, y, w, h = (float(v) for v in rect)
+            rgba = [float(c) for c in color[:4]] + [1.0] * (4 - len(color[:4]))
+            page_no = int(item.get("pageIndex", 0)) + 1
+        except (ValueError, TypeError, OverflowError):
+            continue
         notes.append(
             UnderlineNote(
                 id=f"{SkimNotesReader.ID_PREFIX}{index}",
-                page=int(item.get("pageIndex", 0)) + 1,
+                page=page_no,
                 bounds=Rect(x, y, x + w, y + h),
                 color=Color(*rgba[:4]),
                 text=str(item.get("contents", "") or ""),

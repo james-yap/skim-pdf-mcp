@@ -165,7 +165,7 @@ class ReadingService:
                 page_text = pdf.page_text(shown)
                 if render:
                     overlays = [Overlay(n.bounds, PENDING_RGB) for n in pending if n.page == shown]
-                    if selection.present and selection.bounds and selection.page in (None, shown):
+                    if selection.present and selection.bounds and selection.page == shown:
                         overlays.append(Overlay(selection.bounds, SELECTION_RGB))
                     rendered = pdf.render(shown, overlays, DEFAULT_DPI)
                     png = rendered.png
@@ -219,7 +219,8 @@ class ReadingService:
                 skipped.append({"id": note_id, "reason": "not_a_pending_underline"})
         marked: list[str] = []
         outcomes = self._backend.recolor_underlines(doc.path, todo, PROCESSED_COLOR) if todo else {}
-        for note_id, outcome in outcomes.items():
+        for note_id in todo:
+            outcome = outcomes.get(note_id, "missing")
             if outcome == "ok":
                 marked.append(note_id)
             else:
@@ -252,7 +253,8 @@ class ReadingService:
                 skipped.append({"id": note_id, "reason": "not_a_processed_underline"})
         cleared: list[str] = []
         outcomes = self._backend.delete_underlines(doc.path, todo) if todo else {}
-        for note_id, outcome in outcomes.items():
+        for note_id in todo:
+            outcome = outcomes.get(note_id, "missing")
             if outcome == "ok":
                 cleared.append(note_id)
             else:

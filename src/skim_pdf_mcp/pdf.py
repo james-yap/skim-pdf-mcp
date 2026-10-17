@@ -97,30 +97,45 @@ class PyMuPdfDocument:
         return self._doc[page - 1]
 
     def page_text(self, page: int) -> str:
-        return str(self._page(page).get_text("text")).strip()
+        try:
+            return str(self._page(page).get_text("text")).strip()
+        except SkimError:
+            raise
+        except Exception as exc:
+            raise SkimError(f"Could not read text of page {page}: {exc}") from exc
 
     def text_in_rect(self, page: int, rect: Rect) -> str:
-        pg = self._page(page)
-        view = _to_page_rect(pg, rect)  # word boxes are reported in unrotated page space
-        words = []
-        for x0, y0, x1, y1, word, *_ in pg.get_text("words"):
-            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-            if view.x0 <= cx <= view.x1 and view.y0 <= cy <= view.y1:
-                words.append(word)
-        return " ".join(words)
+        try:
+            pg = self._page(page)
+            view = _to_page_rect(pg, rect)  # word boxes are reported in unrotated page space
+            words = []
+            for x0, y0, x1, y1, word, *_ in pg.get_text("words"):
+                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                if view.x0 <= cx <= view.x1 and view.y0 <= cy <= view.y1:
+                    words.append(word)
+            return " ".join(words)
+        except SkimError:
+            raise
+        except Exception as exc:
+            raise SkimError(f"Could not read text of page {page}: {exc}") from exc
 
     def render(
         self, page: int, overlays: Sequence[Overlay], dpi: int = DEFAULT_DPI
     ) -> RenderedPage:
-        pg = self._page(page)
-        zoom = dpi / 72
-        longest = max(pg.rect.width, pg.rect.height)
-        zoom = min(zoom, MAX_SIDE_PX / longest)
-        for _ in range(_SHRINK_STEPS):
-            png, width, height = _render_once(pg, overlays, zoom)
-            if len(png) <= MAX_PNG_BYTES:
-                return RenderedPage(png, width, height, round(zoom * 72))
-            zoom *= _SHRINK_FACTOR
+        try:
+            pg = self._page(page)
+            zoom = dpi / 72
+            longest = max(pg.rect.width, pg.rect.height)
+            zoom = min(zoom, MAX_SIDE_PX / longest)
+            for _ in range(_SHRINK_STEPS):
+                png, width, height = _render_once(pg, overlays, zoom)
+                if len(png) <= MAX_PNG_BYTES:
+                    return RenderedPage(png, width, height, round(zoom * 72))
+                zoom *= _SHRINK_FACTOR
+        except SkimError:
+            raise
+        except Exception as exc:
+            raise SkimError(f"Could not render page {page}: {exc}") from exc
         raise SkimError(
             f"Page {page} is too detailed to render under the {MAX_PNG_BYTES // (1024 * 1024)} MiB "
             "image budget."
