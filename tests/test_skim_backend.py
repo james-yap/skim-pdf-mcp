@@ -42,22 +42,32 @@ def test_parse_numbers_accepts_comma_decimals_and_semicolon_lists() -> None:
 def test_list_documents_parses_records_and_skips_unsaved_documents() -> None:
     raw = rec("a.pdf", "/Users/me/a.pdf", "3", "10") + rec("Untitled", "", "1", "1")
     runner = ScriptedRunner({"osascript": raw.encode()})
-    docs = AppleScriptBackend(runner).list_documents()
+    docs, warnings = AppleScriptBackend(runner).list_documents()
     assert [(d.name, d.path, d.current_page, d.page_count) for d in docs] == [
         ("a.pdf", "/Users/me/a.pdf", 3, 10)
     ]
+    assert warnings == []
 
 
-def test_list_documents_raises_when_a_named_document_failed_its_path_lookup() -> None:
-    raw = rec("a.pdf", "", "1", "2", "Can't make file into type specifier")
-    with pytest.raises(SkimError, match=r"a\.pdf.*path lookup failed"):
-        AppleScriptBackend(ScriptedRunner({"osascript": raw.encode()})).list_documents()
+def test_list_documents_skips_a_failed_path_lookup_and_warns() -> None:
+    raw = rec("a.pdf", "/Users/me/a.pdf", "1", "2") + rec(
+        "b.pdf", "", "1", "2", "Can't make file into type specifier"
+    )
+    docs, warnings = AppleScriptBackend(
+        ScriptedRunner({"osascript": raw.encode()})
+    ).list_documents()
+    assert [(d.name, d.path) for d in docs] == [("a.pdf", "/Users/me/a.pdf")]
+    assert len(warnings) == 1
+    assert "b.pdf" in warnings[0] and "Can't make file into type specifier" in warnings[0]
 
 
 def test_list_documents_preserves_unicode_paths() -> None:
     raw = rec("ü.pdf", "/Users/me/Ünï/ü.pdf", "1", "2")
-    docs = AppleScriptBackend(ScriptedRunner({"osascript": raw.encode()})).list_documents()
+    docs, warnings = AppleScriptBackend(
+        ScriptedRunner({"osascript": raw.encode()})
+    ).list_documents()
     assert docs[0].path == "/Users/me/Ünï/ü.pdf"
+    assert warnings == []
 
 
 def test_get_selection_empty_when_script_returns_nothing() -> None:

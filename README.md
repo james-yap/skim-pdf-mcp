@@ -94,7 +94,7 @@ All tools accept an optional `document_path` (a path listed by `get_open_documen
 
 | Tool | Hints | Purpose |
 |---|---|---|
-| `get_open_documents()` | read-only | PDFs open in Skim, frontmost first: `name`, `path`, `page_count`, `current_page`, `front`. |
+| `get_open_documents()` | read-only | PDFs open in Skim, frontmost first: `name`, `path`, `page_count`, `current_page`, `front`, plus `warnings` for skipped path lookups. |
 | `get_reading_context(document_path?, page?, include_image?)` | read-only | Front-document identity, current/rendered page, live selection, pending underlines, page text, page PNG. |
 | `get_pending_underlines(document_path?)` | read-only | All pending (red) underlines in reading order with quoted text. |
 | `mark_processed(ids, document_path?)` | **modifies**, idempotent | Recolor pending underlines gray by id. Deletes nothing. |
@@ -149,7 +149,7 @@ Both take `ids` (underline ids from the tools above) and return `{"document": �
 |---|---|
 | `'osascript' did not answer within 25s` | macOS is waiting for Automation approval, or Skim is busy with a modal dialog. Approve in System Settings → Privacy & Security → Automation. |
 | `No PDF documents are open in Skim.` | Open a saved PDF in Skim. Unsaved/untitled documents have no file path and are skipped. If a saved PDF is open and you still see this, run `.venv/bin/pytest --live-skim`: it compares the listing against a plain `osascript` query of Skim. |
-| `Skim lists '<name>' but its path lookup failed: …` | Skim named an open document but refused to report its path. The AppleScript error is quoted in the message; the document is not silently dropped. |
+| `warnings` in `get_open_documents` report `Skipped '<name>': path lookup failed: …` | Skim named an open document but refused to report its path. The healthy documents are still listed; the skipped one is reported in `warnings` with the AppleScript error quoted, never silently dropped. |
 | Underlines missing from the context | Only red underlines are pending. Check the color; gray ones are processed. |
 | `warnings` mention the `skimnotes` fallback / ids look like `skimnotes:0` | AppleScript failed for notes, so notes were read from the last-saved copy via `skimnotes`. That copy can lag unsaved edits and is read-only; `mark_processed`/`clear_processed` skip those ids. Fix the AppleScript problem and retry. |
 | Tool calls fail from ChatGPT, work locally | `tunnel-client run` is not running or not ready; check `tunnel-client doctor --profile skim --explain`. |

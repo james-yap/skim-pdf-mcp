@@ -25,7 +25,7 @@ def _skim_document_names() -> str:
 
 def test_list_documents_and_read_only_queries_work_against_front_document() -> None:
     backend = AppleScriptBackend(notes_fallback=SkimNotesReader())
-    docs = backend.list_documents()
+    docs, _ = backend.list_documents()
     if not docs:
         pytest.skip("Skim has no saved PDF open")
     front = docs[0]
@@ -41,9 +41,10 @@ def test_listing_agrees_with_an_independent_osascript_query() -> None:
         pytest.skip("Skim has no PDF open")
     svc = ReadingService(AppleScriptBackend(notes_fallback=SkimNotesReader()))
     listed = svc.open_documents()
-    assert listed, f"Skim reports {reported!r} open but get_open_documents returned nothing"
-    for doc in listed:
+    assert listed["documents"], (
+        f"Skim reports {reported!r} open but get_open_documents returned nothing"
+    )
+    for doc in listed["documents"]:
         assert doc["name"] in reported
         assert doc["path"].endswith(".pdf")
-        # path-addressed tools must find the document under the path it was listed with
         assert svc.pending_underlines(doc["path"])["document"]["path"] == doc["path"]

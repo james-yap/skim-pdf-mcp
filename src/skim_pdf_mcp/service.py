@@ -63,12 +63,15 @@ class ReadingService:
 
     # -- documents ---------------------------------------------------------------------
 
-    def open_documents(self) -> list[dict[str, Any]]:
-        docs = self._backend.list_documents()
-        return [{**doc.to_dict(), "front": i == 0} for i, doc in enumerate(docs)]
+    def open_documents(self) -> dict[str, Any]:
+        docs, warnings = self._backend.list_documents()
+        return {
+            "documents": [{**doc.to_dict(), "front": i == 0} for i, doc in enumerate(docs)],
+            "warnings": warnings,
+        }
 
     def _resolve(self, document_path: str | None) -> DocumentInfo:
-        docs = self._backend.list_documents()
+        docs, _ = self._backend.list_documents()
         if not docs:
             raise SkimError("No PDF documents are open in Skim.")
         if document_path is None:

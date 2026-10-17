@@ -57,8 +57,8 @@ def run_process(argv: Sequence[str], timeout: float) -> bytes:
 class SkimBackend(Protocol):
     """What the reading service needs from Skim."""
 
-    def list_documents(self) -> list[DocumentInfo]:
-        """Open PDF documents, frontmost first."""
+    def list_documents(self) -> tuple[list[DocumentInfo], list[str]]:
+        """Open PDF documents, frontmost first, plus warnings for skipped path lookups."""
 
     def get_selection(self, path: str) -> Selection:
         """Live text selection of the document at ``path`` (empty when there is none)."""
@@ -327,16 +327,15 @@ class AppleScriptBackend:
         argv = [self._osascript, *_script_args(script), *args]
         return self._run(argv, OSASCRIPT_TIMEOUT_S).decode("utf-8", "replace")
 
-    def list_documents(self) -> list[DocumentInfo]:
+    def list_documents(self) -> tuple[list[DocumentInfo], list[str]]:
         docs: list[DocumentInfo] = []
+        warnings: list[str] = []
         for rec in _records(self._osa(_LIST_DOCUMENTS)):
             name, path, current, count, path_error = (rec + [""] * 5)[:5]
             if not path:
                 if path_error:
-                    # Never let a failed lookup masquerade as "not open"; only genuinely
-                    # unsaved documents (no file, so Skim reports no path) are skipped.
-                    raise SkimError(f"Skim lists '{name}' but its path lookup failed: {path_error}")
-                continue  # unsaved documents have no file Skim could point us at
+                    warnings.append(f"Skipped '{name}': path lookup failed: {path_error}")
+                continue
             docs.append(
                 DocumentInfo(
                     name=name,
@@ -345,7 +344,7 @@ class AppleScriptBackend:
                     current_page=max(1, _first_int(current, 1)),
                 )
             )
-        return docs
+        return docs, warnings
 
     def get_selection(self, path: str) -> Selection:
         raw = self._osa(_GET_SELECTION, path).strip("\n")

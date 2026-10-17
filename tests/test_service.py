@@ -24,14 +24,21 @@ def make(
 
 def test_open_documents_flags_only_the_front_document() -> None:
     svc, _, _ = make()
-    docs = svc.open_documents()
-    assert [(d["name"], d["front"]) for d in docs] == [("front.pdf", True), ("back.pdf", False)]
+    out = svc.open_documents()
+    assert [(d["name"], d["front"]) for d in out["documents"]] == [
+        ("front.pdf", True),
+        ("back.pdf", False),
+    ]
+    assert out["warnings"] == []
 
 
-def test_no_open_documents_is_a_clear_error() -> None:
-    svc = ReadingService(FakeBackend([]))
-    with pytest.raises(SkimError, match="No PDF documents are open"):
-        svc.reading_context()
+def test_open_documents_reports_skipped_path_lookups_and_resolve_still_finds_healthy_docs() -> None:
+    backend = FakeBackend([BACK], warnings=["Skipped 'b.pdf': path lookup failed: boom"])
+    svc = ReadingService(backend, opener=lambda _path: FakePdf(pages=2))
+    out = svc.open_documents()
+    assert [d["path"] for d in out["documents"]] == [BACK.path]
+    assert out["warnings"] == ["Skipped 'b.pdf': path lookup failed: boom"]
+    assert svc.pending_underlines(BACK.path)["document"]["path"] == BACK.path
 
 
 def test_unknown_document_path_is_rejected_and_lists_open_ones() -> None:

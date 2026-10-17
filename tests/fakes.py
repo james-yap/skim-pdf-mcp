@@ -44,16 +44,18 @@ class FakeBackend:
         documents: list[DocumentInfo],
         notes: dict[str, list[UnderlineNote]] | None = None,
         selections: dict[str, Selection] | None = None,
+        warnings: list[str] | None = None,
     ) -> None:
         self.documents = documents
         self.notes = notes or {}
         self.selections = selections or {}
+        self.warnings = warnings or []
         self.recolored: list[tuple[str, tuple[str, ...], Color]] = []
         self.deleted: list[tuple[str, tuple[str, ...]]] = []
         self.selection_error: SkimError | None = None
 
-    def list_documents(self) -> list[DocumentInfo]:
-        return list(self.documents)
+    def list_documents(self) -> tuple[list[DocumentInfo], list[str]]:
+        return list(self.documents), list(self.warnings)
 
     def get_selection(self, path: str) -> Selection:
         if self.selection_error:
