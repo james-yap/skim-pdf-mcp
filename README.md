@@ -2,7 +2,7 @@
 
 A local [MCP](https://modelcontextprotocol.io) server that bridges the [Skim](https://skim-app.sourceforge.io) PDF reader to ChatGPT. You read a PDF in Skim, underline what you want to ask about, and ChatGPT — which renders math well — gets the page, your selection and your underlined passages in one call.
 
-- **Underline-driven.** A **green** underline means *pending* (ask about this). A **gray** underline means *processed*. Your highlights, red underlines and every other kind of markup are never touched.
+- **Underline-driven.** A **red** underline means *pending* (ask about this). A **gray** underline means *processed*. Your highlights and every other kind of markup are never touched.
 - **One context call.** `get_reading_context` returns the front document, current page, live selection, pending underlines with quoted text, the page's text layer, and a PNG of the page with the selection and underlines outlined. The image is the ground truth for math; the text layer can garble formulas.
 - **Reading marks as processed; nothing is deleted.** Underlines ChatGPT receives are recolored gray in the same call. Deleting is a separate, explicit, approval-gated tool.
 - **Private by design.** The server runs on your Mac. ChatGPT reaches it through OpenAI's [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels): an outbound-only connection, no open ports, no public URL.
@@ -78,15 +78,15 @@ Tunnel limits that shape this server: a serialized response may be at most **10 
 
 ## The underline workflow
 
-1. Read in Skim. Underline passages you want to ask about with a **green** underline. (Underline colors are configurable in Skim's settings; a clearly green color is what counts as pending. Red and every other color are ignored.)
+1. Read in Skim. Underline passages you want to ask about with a **red** underline. (Underline colors are configurable in Skim's settings; pure red is what counts as pending. Green and every other color are ignored.)
 2. Optionally select text for a one-off question — the live selection is included in the context.
-3. In ChatGPT: *"Go through my pending underlines."* ChatGPT calls `get_reading_context` and sees the page image with your selection outlined in **blue** and the underlines it was given on that page outlined in **green**, plus each underline's quoted text and any comment you typed on the note.
-4. The underlines ChatGPT receives are turned **gray** in Skim in that same call: reading them is what marks them processed, with no separate request or approval. They stay in the document as a record. Underlines beyond the 50 listed per context call stay green for the next read. If recoloring fails, ChatGPT still gets the full answer and a warning naming the ids that stayed green.
+3. In ChatGPT: *"Go through my pending underlines."* ChatGPT calls `get_reading_context` and sees the page image with your selection outlined in **blue** and the underlines it was given on that page outlined in **red**, plus each underline's quoted text and any comment you typed on the note.
+4. The underlines ChatGPT receives are turned **gray** in Skim in that same call: reading them is what marks them processed, with no separate request or approval. They stay in the document as a record. Underlines beyond the 50 listed per context call stay red for the next read. If recoloring fails, ChatGPT still gets the full answer and a warning naming the ids that stayed red.
 5. Later, when you want the clutter gone, ask ChatGPT to `clear_processed` specific gray underlines (you approve it). Only gray underlines whose ids you name are deleted.
 
-Color rules: green underline = pending; neutral gray underline = processed; any other underline color (red included), highlights and all other note types are ignored and can never be modified or deleted by this server.
+Color rules: red underline = pending; neutral gray underline = processed; any other underline color, highlights and all other note types are ignored and can never be modified or deleted by this server.
 
-Because reading marks what it returns, an underline is only ever shown to ChatGPT once. To see one again, make it green again in Skim.
+Because reading marks what it returns, an underline is only ever shown to ChatGPT once. To see one again, make it red again in Skim.
 
 Changes are made in the open Skim document. Save it as you normally would so Skim writes the notes to disk.
 
@@ -98,7 +98,7 @@ All tools accept an optional `document_path` (a path listed by `get_open_documen
 |---|---|---|
 | `get_open_documents()` | read-only | PDFs open in Skim, frontmost first: `name`, `path`, `page_count`, `current_page`, `front`, plus `warnings` for skipped path lookups. |
 | `get_reading_context(document_path?, page?, include_image?)` | **modifies**, idempotent | Front-document identity, current/rendered page, live selection, pending underlines, page text, page PNG. Marks the pending underlines it returns as processed (gray). |
-| `get_pending_underlines(document_path?)` | **modifies**, idempotent | All pending (green) underlines in reading order with quoted text. Marks them processed (gray). |
+| `get_pending_underlines(document_path?)` | **modifies**, idempotent | All pending (red) underlines in reading order with quoted text. Marks them processed (gray). |
 | `mark_processed(ids, document_path?)` | **modifies**, idempotent | Recolor pending underlines gray by id (manual re-marking). Deletes nothing. |
 | `clear_processed(ids, document_path?)` | **modifies, destructive** | Permanently delete gray underlines by id. |
 
@@ -114,7 +114,7 @@ All tools accept an optional `document_path` (a path listed by `get_open_documen
                 "bounds": {"x0": 100.0, "y0": 500.0, "x1": 180.0, "y1": 516.0}},
   "pending_underlines": [
     {"id": "a1b2…", "page": 4, "quoted_text": "the spectral gap is positive",
-     "comment": "why does this follow?", "color": {"r": 0.0, "g": 1.0, "b": 0.0, "a": 1.0},
+     "comment": "why does this follow?", "color": {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0},
      "status": "pending", "bounds": {"x0": 72.0, "y0": 600.0, "x1": 300.0, "y1": 616.0}}
   ],
   "pending_total": 1,
@@ -130,7 +130,7 @@ All tools accept an optional `document_path` (a path listed by `get_open_documen
 - With nothing selected, `selection` is explicitly `{"present": false, "text": "", "page": null, "bounds": null}`. The selection outline is only drawn when the selection is on the rendered page.
 - Rectangles are in PDF points with the origin at the page's bottom-left (y grows upward).
 - `quoted_text` is read from the PDF text layer under the underline; `comment` is the note's own text, empty when it merely repeats the quote. A multi-line underline is described by one bounding rectangle, so its quoted text can include neighbouring words in that box — check the image.
-- Up to 50 pending underlines are listed (`pending_truncated` tells you if there were more; they stay pending and the next read returns them, or use `get_pending_underlines` for all). `page_text` is capped at 8000 characters. Only the listed underlines that are on the rendered page are outlined on the image, in green, even though they are gray in Skim as soon as the call returns.
+- Up to 50 pending underlines are listed (`pending_truncated` tells you if there were more; they stay pending and the next read returns them, or use `get_pending_underlines` for all). `page_text` is capped at 8000 characters. Only the listed underlines that are on the rendered page are outlined on the image, in red, even though they are gray in Skim as soon as the call returns.
 - The underlines listed in `pending_underlines` are recolored gray in the same call; `marked_processed` holds the ids that were recolored. If a recolor fails, the response is still returned in full and `warnings` names the ids that stayed pending.
 - Problems that do not prevent a useful answer (selection unreadable, image failed, recolor failed) appear in `warnings` instead of failing the call.
 
@@ -142,8 +142,8 @@ Returns `{"document": …, "count": n, "underlines": […], "marked_processed": 
 
 Both take `ids` (underline ids from the tools above) and return `{"document": …, <result lists>, "skipped": [{"id", "reason"}]}`. Every requested id appears in exactly one result list:
 
-- `mark_processed` → `marked_processed` (recolored gray), `already_processed`, and skipped ids with reason `not_found`, `read_only_skimnotes_id`, `not_a_pending_underline` (highlights and non-green underlines are never recolored), or the backend outcome (`missing`, `not_underline`) when the recolor did not happen.
-- `clear_processed` → `cleared` (deleted), and skipped ids with reason `not_found`, `read_only_skimnotes_id`, `still_pending`, `not_a_processed_underline`, or the backend outcome (`missing`, `not_underline`) when the delete did not happen. A green (pending) underline can never be deleted by this tool.
+- `mark_processed` → `marked_processed` (recolored gray), `already_processed`, and skipped ids with reason `not_found`, `read_only_skimnotes_id`, `not_a_pending_underline` (highlights and non-red underlines are never recolored), or the backend outcome (`missing`, `not_underline`) when the recolor did not happen.
+- `clear_processed` → `cleared` (deleted), and skipped ids with reason `not_found`, `read_only_skimnotes_id`, `still_pending`, `not_a_processed_underline`, or the backend outcome (`missing`, `not_underline`) when the delete did not happen. A red (pending) underline can never be deleted by this tool.
 
 Reading already marks what it returns, so `mark_processed` is only for re-marking ids by hand (for example ones a read reported it could not mark); it is annotated `readOnlyHint: false`, idempotent.
 
@@ -167,7 +167,7 @@ The server keeps its own log, so errors are not lost when it is launched by `tun
 | `'osascript' did not answer within 25s` | macOS is waiting for Automation approval, or Skim is busy with a modal dialog. Approve in System Settings → Privacy & Security → Automation. |
 | `No PDF documents are open in Skim.` | Open a saved PDF in Skim. Unsaved/untitled documents have no file path and are skipped. If a saved PDF is open and you still see this, run `.venv/bin/pytest --live-skim`: it compares the listing against a plain `osascript` query of Skim. |
 | `warnings` in `get_open_documents` report `Skipped '<name>': path lookup failed: …` | Skim named an open document but refused to report its path. The healthy documents are still listed; the skipped one is reported in `warnings` with the AppleScript error quoted, never silently dropped. |
-| Underlines missing from the context | Only green underlines are pending. Check the color; gray ones are processed, and red ones (and every other color) are ignored. Underlines a previous read already returned are now gray. |
+| Underlines missing from the context | Only red underlines are pending. Check the color; gray ones are processed, and green ones (and every other color) are ignored. Underlines a previous read already returned are now gray. |
 | `warnings` mention the `skimnotes` fallback / ids look like `skimnotes:0` | AppleScript failed for notes, so notes were read from the last-saved copy via `skimnotes`. That copy can lag unsaved edits and is read-only; `mark_processed`/`clear_processed` skip those ids. Fix the AppleScript problem and retry. |
 | Tool calls fail from ChatGPT, work locally | `tunnel-client run` is not running or not ready; check `tunnel-client doctor --profile skim --explain`. |
 | ChatGPT shows `Skim returned an error` (or any tool error) | The full error is in the [server log](#logs): `tail -n 50 ~/Library/Logs/skim-pdf-mcp/server.log`. Look for the `tool=… outcome=error` line and the `osascript … stderr:` line just above it. |

@@ -181,7 +181,7 @@ def test_reading_context_marks_exactly_the_listed_pending_underlines_gray() -> N
     many = [
         note(f"n{i}", bounds=Rect(72, i, 200, i + 1)) for i in range(MAX_PENDING_IN_CONTEXT + 5)
     ]
-    many += [note("done", color=GRAY), note("red", color=RED), note("blue", color=BLUE)]
+    many += [note("done", color=GRAY), note("green", color=GREEN), note("blue", color=BLUE)]
     svc, backend, _ = make({FRONT.path: many})
     ctx = svc.reading_context()
     listed = [u["id"] for u in ctx.data["pending_underlines"]]
@@ -193,8 +193,8 @@ def test_reading_context_marks_exactly_the_listed_pending_underlines_gray() -> N
     assert ctx.data["pending_truncated"] is True
     assert svc.pending_underlines()["count"] == 5
     assert backend.deleted == []
-    assert {n.id: n.color for n in backend.notes[FRONT.path] if n.id in ("red", "blue")} == {
-        "red": RED,
+    assert {n.id: n.color for n in backend.notes[FRONT.path] if n.id in ("green", "blue")} == {
+        "green": GREEN,
         "blue": BLUE,
     }
 
@@ -277,20 +277,20 @@ def test_clear_processed_deletes_only_listed_gray_underlines() -> None:
         FRONT.path: [
             note("g1", color=GRAY),
             note("g2", color=GRAY),
-            note("green"),
+            note("pending"),
             note("blue", color=BLUE),
         ]
     }
     svc, backend, _ = make(notes)
-    out = svc.clear_processed(["g1", "green", "blue", "nope"])
+    out = svc.clear_processed(["g1", "pending", "blue", "nope"])
     assert out["cleared"] == ["g1"]
     assert {s["id"]: s["reason"] for s in out["skipped"]} == {
-        "green": "still_pending",
+        "pending": "still_pending",
         "blue": "not_a_processed_underline",
         "nope": "not_found",
     }
     assert backend.deleted == [(FRONT.path, ("g1",))]
-    assert {n.id for n in backend.notes[FRONT.path]} == {"g2", "green", "blue"}
+    assert {n.id for n in backend.notes[FRONT.path]} == {"g2", "pending", "blue"}
 
 
 @pytest.mark.parametrize("method", ["mark_processed", "clear_processed"])
@@ -303,7 +303,7 @@ def test_mutations_require_ids(method: str) -> None:
 
 @pytest.mark.parametrize("method", ["mark_processed", "clear_processed"])
 def test_skimnotes_fallback_ids_are_never_sent_to_skim(method: str) -> None:
-    color = GRAY if method == "clear_processed" else GREEN
+    color = GRAY if method == "clear_processed" else RED
     svc, backend, _ = make({FRONT.path: [note("skimnotes:0", color=color)]})
     out = getattr(svc, method)(["skimnotes:0"])
     assert out["skipped"] == [{"id": "skimnotes:0", "reason": "read_only_skimnotes_id"}]

@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 MAX_PENDING_IN_CONTEXT = 50
 MAX_PAGE_TEXT_CHARS = 8000
 IMAGE_LEGEND = (
-    "Blue outline = live selection; green outlines = the underlines listed in this response on "
+    "Blue outline = live selection; red outlines = the underlines listed in this response on "
     "this page (they have just been marked processed). "
     "The image is the ground truth for math; the text layer can garble formulas."
 )
@@ -245,7 +245,7 @@ class ReadingService:
     def mark_processed(
         self, ids: Sequence[str], document_path: str | None = None
     ) -> dict[str, Any]:
-        """Recolor pending (green) underlines gray. Nothing else is touched."""
+        """Recolor pending (red) underlines gray. Nothing else is touched."""
         wanted = _dedupe(ids)
         doc = self._resolve(document_path)
         by_id = {n.id: n for n in self._backend.list_underlines(doc.path)}

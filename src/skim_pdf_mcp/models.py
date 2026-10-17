@@ -77,18 +77,18 @@ PROCESSED_COLOR = Color(0.5, 0.5, 0.5, 1.0)
 
 
 class UnderlineStatus(str, Enum):
-    """Meaning of an underline's colour in the green/gray workflow."""
+    """Meaning of an underline's colour in the red/gray workflow."""
 
-    PENDING = "pending"  # green: something to ask about
+    PENDING = "pending"  # red: something to ask about
     PROCESSED = "processed"  # gray: already handled
-    OTHER = "other"  # any other colour (red included): the reader's own markup, never touched
+    OTHER = "other"  # any other colour: the reader's own markup, never touched
 
 
 def classify_color(color: Color) -> UnderlineStatus:
-    """Green -> pending, neutral gray -> processed, everything else -> other."""
+    """Red -> pending, neutral gray -> processed, everything else -> other."""
     hi = max(color.r, color.g, color.b)
     lo = min(color.r, color.g, color.b)
-    if color.g >= 0.35 and color.g - max(color.r, color.b) >= 0.3:
+    if color.r >= 0.6 and color.r - max(color.g, color.b) >= 0.4:
         return UnderlineStatus.PENDING
     if hi - lo <= 0.08 and 0.2 <= hi <= 0.85:
         return UnderlineStatus.PROCESSED

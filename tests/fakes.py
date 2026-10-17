@@ -24,7 +24,7 @@ BLUE = Color(0.0, 0.0, 1.0)
 def note(
     note_id: str,
     page: int = 1,
-    color: Color = GREEN,
+    color: Color = RED,
     text: str = "",
     bounds: Rect | None = None,
 ) -> UnderlineNote:

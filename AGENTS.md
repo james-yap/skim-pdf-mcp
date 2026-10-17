@@ -1,12 +1,12 @@
 # AGENTS.md
 
-skim-pdf-mcp: local FastMCP server (Python ≥3.10) that exposes the Skim PDF reader's front document, selection and green/gray underline notes to ChatGPT, with PyMuPDF page renders. User docs are in `README.md`.
+skim-pdf-mcp: local FastMCP server (Python ≥3.10) that exposes the Skim PDF reader's front document, selection and red/gray underline notes to ChatGPT, with PyMuPDF page renders. User docs are in `README.md`.
 
 ## Layout
 
 ```
 src/skim_pdf_mcp/
-  models.py    Rect/Color/Selection/UnderlineNote/DocumentInfo, SkimError, green/gray classification
+  models.py    Rect/Color/Selection/UnderlineNote/DocumentInfo, SkimError, red/gray classification
   skim.py      SkimBackend protocol; AppleScriptBackend (osascript snippets + parsing);
                SkimNotesReader (read-only `skimnotes get -format plist` fallback); Runner seam
   pdf.py       PdfDocument protocol; PyMuPdfDocument (text under a rect, render + overlays, size budget)
@@ -36,7 +36,7 @@ uv venv && uv pip install -e ".[dev]"
 - OS access only through the injectable `Runner` (`skim.run_process`) and PDF access only through `PdfDocument`; tests use fakes, so code paths CI runs must not assume macOS.
 - Tool errors: raise `SkimError` with a user-safe message; `server._tool_errors` logs it with the full traceback and converts it to a `ToolError`.
 - Tools that modify the document are `readOnlyHint: false` (`get_reading_context`, `get_pending_underlines`, `mark_processed`, `clear_processed`); only `clear_processed` is `destructiveHint: true`. Keep README/tool docstrings saying that reading marks what it returns without approval, and that `clear_processed` needs caller approval.
-- Reads modify notes by design: `get_reading_context` and `get_pending_underlines` recolor exactly the pending (green) underlines they return to gray in the same call (`ReadingService._mark_delivered`; underlines truncated out of the 50-item context stay pending; a failed recolor becomes a warning naming the ids, never a failed read). `mark_processed` only recolors pending underlines and is for manual re-marking; `clear_processed` only deletes processed (gray) underlines that were named by id. Highlights and other underline colors, red included, are never touched. The AppleScript also re-checks that the note is an underline.
+- Reads modify notes by design: `get_reading_context` and `get_pending_underlines` recolor exactly the pending (red) underlines they return to gray in the same call (`ReadingService._mark_delivered`; underlines truncated out of the 50-item context stay pending; a failed recolor becomes a warning naming the ids, never a failed read). `mark_processed` only recolors pending underlines and is for manual re-marking; `clear_processed` only deletes processed (gray) underlines that were named by id. Highlights and other underline colors, green included, are never touched. The AppleScript also re-checks that the note is an underline.
 - Never read arbitrary paths: `document_path` must match a document Skim reports as open.
 - Unit tests only for behavior, boundaries and invariants; no tests of wiring or wording.
 
@@ -48,7 +48,7 @@ uv venv && uv pip install -e ".[dev]"
 - `skimnotes` plist shape (verified with skimnotes 2.10.2): array of dicts with `type` ("Underline"), `pageIndex` (0-based), `bounds` (`"{{x, y}, {w, h}}"`), `color` (`[r, g, b, a]` 0–1), `contents`, `string`, `quadrilateralPoints`. Fallback ids are `skimnotes:<index>` and are never mutable.
 - FastMCP here is the standalone `fastmcp` package (4.x), not `mcp.server.fastmcp`.
 - Skim's AppleScript dictionary reserves ordinary words inside `tell application "Skim"`: `status` (a download property) as a variable name made `set status to "missing"` fail with `Can't set status … (-10006)`. Check new variable names against `Skim.sdef` (in the Skim source) before using them in a snippet; the snippets use `outcome`.
-- Pending is a **green** underline (`g >= 0.35` and ahead of both red and blue by 0.3; Skim's own green reads as about (0.06, 0.44, 0.01), so a "bright green only" threshold misses it), processed is neutral gray; red is just another foreign color. The page-image outline for pending is `pdf.PENDING_RGB` (green).
+- Pending is a **red** underline (`r >= 0.6` and ahead of both green and blue by 0.4), processed is neutral gray; every other color, green included, is a foreign color. Pending was briefly green; Skim's own green reads as about (0.06, 0.44, 0.01), so a "bright color only" threshold can miss Skim's palette colors. The page-image outline for pending is `pdf.PENDING_RGB` (red).
 
 ## Logging
 

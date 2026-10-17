@@ -33,9 +33,9 @@ from .skim import AppleScriptBackend, SkimNotesReader
 log = logging.getLogger(__name__)
 
 INSTRUCTIONS = """\
-Bridges the Skim PDF reader to ChatGPT. The reader marks passages to ask about with GREEN \
-underlines (pending) in Skim; processed ones are GRAY. Highlights, red underlines and other \
-markup belong to the reader and are never touched.
+Bridges the Skim PDF reader to ChatGPT. The reader marks passages to ask about with RED \
+underlines (pending) in Skim; processed ones are GRAY. Highlights and other markup belong to \
+the reader and are never touched.
 
 Typical flow: call get_reading_context to see the front document, current page, live selection, \
 pending underlines and a rendered page image. Answer the reader's questions. Reading marks the \
@@ -124,10 +124,10 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
         """Everything about what the reader is looking at, in one call.
 
         Returns the front document (name, path), its current page, the live text selection
-        (explicitly empty when nothing is selected), pending green underlines with their quoted
+        (explicitly empty when nothing is selected), pending red underlines with their quoted
         text, page, color and comment, the page's text layer, and a PNG of the page with the
         selection (blue, only when it is on the rendered page) and the listed underlines on
-        that page (green) outlined. The image is the ground truth for math; the text layer
+        that page (red) outlined. The image is the ground truth for math; the text layer
         may garble formulas.
 
         MODIFIES the reader's Skim document: the pending underlines returned in this response
@@ -149,7 +149,7 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
     @mcp.tool(title="Get pending underlines", annotations=_MARKS_PROCESSED)
     @_tool_errors
     def get_pending_underlines(document_path: str | None = None) -> dict[str, Any]:
-        """List pending (green) underlines of a document in reading order, with quoted text.
+        """List pending (red) underlines of a document in reading order, with quoted text.
 
         MODIFIES the reader's Skim document: every underline returned is recolored gray
         (processed) in the same call, with no further approval. The ids that were marked are
@@ -163,11 +163,11 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
     @mcp.tool(title="Mark underlines processed", annotations=_MARKS_PROCESSED)
     @_tool_errors
     def mark_processed(ids: list[str], document_path: str | None = None) -> dict[str, Any]:
-        """Recolor pending (green) underlines gray by id. MODIFIES the reader's Skim document.
+        """Recolor pending (red) underlines gray by id. MODIFIES the reader's Skim document.
 
         Reading tools already mark the underlines they return, so this is only for re-marking
         specific ids by hand (for example ones a read reported it could not mark). Highlights
-        and underlines of other colors, red included, are skipped, never changed. Nothing is
+        and underlines of other colors are skipped, never changed. Nothing is
         deleted.
 
         Args:
@@ -190,7 +190,7 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
         """PERMANENTLY DELETE processed (gray) underlines by id. MODIFIES the Skim document.
 
         Only run after the reader has explicitly approved clearing these ids. Deletes exactly
-        the ids passed, and only if they are gray underlines: pending (green) underlines,
+        the ids passed, and only if they are gray underlines: pending (red) underlines,
         highlights and other markup are skipped.
 
         Args:
