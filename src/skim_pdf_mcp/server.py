@@ -61,8 +61,8 @@ def build_server(service: ReadingService | None = None) -> FastMCP:
     @mcp.tool(title="List open Skim documents", annotations=_READ_ONLY)
     @_tool_errors
     def get_open_documents() -> dict[str, Any]:
-        """List the PDFs open in Skim, frontmost first: name, path, page count, current page."""
-        return {"documents": svc.open_documents()}
+        """List open Skim PDFs, frontmost first, with warnings for skipped path lookups."""
+        return svc.open_documents()
 
     @mcp.tool(title="Get reading context", annotations=_READ_ONLY)
     @_tool_errors

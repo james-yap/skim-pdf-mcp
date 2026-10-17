@@ -94,7 +94,7 @@ All tools accept an optional `document_path` (a path listed by `get_open_documen
 
 | Tool | Hints | Purpose |
 |---|---|---|
-| `get_open_documents()` | read-only | PDFs open in Skim, frontmost first: `name`, `path`, `page_count`, `current_page`, `front`. |
+| `get_open_documents()` | read-only | PDFs open in Skim, frontmost first: `name`, `path`, `page_count`, `current_page`, `front`, plus `warnings` for skipped path lookups. |
 | `get_reading_context(document_path?, page?, include_image?)` | read-only | Front-document identity, current/rendered page, live selection, pending underlines, page text, page PNG. |
 | `get_pending_underlines(document_path?)` | read-only | All pending (red) underlines in reading order with quoted text. |
 | `mark_processed(ids, document_path?)` | **modifies**, idempotent | Recolor pending underlines gray by id. Deletes nothing. |
@@ -148,7 +148,8 @@ Both take `ids` (underline ids from the tools above) and return `{"document": �
 | Symptom | Cause / fix |
 |---|---|
 | `'osascript' did not answer within 25s` | macOS is waiting for Automation approval, or Skim is busy with a modal dialog. Approve in System Settings → Privacy & Security → Automation. |
-| `No PDF documents are open in Skim.` | Open a saved PDF in Skim. Unsaved/untitled documents have no file path and are skipped. |
+| `No PDF documents are open in Skim.` | Open a saved PDF in Skim. Unsaved/untitled documents have no file path and are skipped. If a saved PDF is open and you still see this, run `.venv/bin/pytest --live-skim`: it compares the listing against a plain `osascript` query of Skim. |
+| `warnings` in `get_open_documents` report `Skipped '<name>': path lookup failed: …` | Skim named an open document but refused to report its path. The healthy documents are still listed; the skipped one is reported in `warnings` with the AppleScript error quoted, never silently dropped. |
 | Underlines missing from the context | Only red underlines are pending. Check the color; gray ones are processed. |
 | `warnings` mention the `skimnotes` fallback / ids look like `skimnotes:0` | AppleScript failed for notes, so notes were read from the last-saved copy via `skimnotes`. That copy can lag unsaved edits and is read-only; `mark_processed`/`clear_processed` skip those ids. Fix the AppleScript problem and retry. |
 | Tool calls fail from ChatGPT, work locally | `tunnel-client run` is not running or not ready; check `tunnel-client doctor --profile skim --explain`. |
@@ -169,7 +170,7 @@ See [AGENTS.md](AGENTS.md) for the code layout and conventions.
 
 The unit suite covers the AppleScript output parsing, the `skimnotes` plist parsing, underline classification, the service logic, real PyMuPDF text extraction and rendering (including rotated pages and the image budget), and the MCP tool surface over an in-memory client. Both transports start and list the same five tools. The AppleScript snippets compile with `osacompile` against Skim's scripting dictionary.
 
-Not yet verified in this repository: the AppleScript snippets running against a live Skim (the `--live-skim` smoke test exists for that), and an end-to-end ChatGPT session through a real tunnel.
+Run against a live Skim (Skim 1.7.17 on macOS, one saved PDF open, Automation approved), read-only only: `get_open_documents`' snippet, `get_selection`, `list_underlines` and `get_pending_underlines` on the front document. The first live run found that the snippets resolved paths with `POSIX path of (file of d)`, which raises AppleScript error -1700 inside Skim, so the listing was empty and path-addressed tools could not find any document; they now use Skim's `path of document`, and `pytest --live-skim` cross-checks the listing against `osascript -e 'tell application "Skim" to get name of every document'`. Not yet run live: the mutating snippets (`mark_processed`, `clear_processed`) and an end-to-end ChatGPT session through a real tunnel.
 
 ## License
 

@@ -57,8 +57,8 @@ def run_process(argv: Sequence[str], timeout: float) -> bytes:
 class SkimBackend(Protocol):
     """What the reading service needs from Skim."""
 
-    def list_documents(self) -> list[DocumentInfo]:
-        """Open PDF documents, frontmost first."""
+    def list_documents(self) -> tuple[list[DocumentInfo], list[str]]:
+        """Open PDF documents, frontmost first, plus warnings for skipped path lookups."""
 
     def get_selection(self, path: str) -> Selection:
         """Live text selection of the document at ``path`` (empty when there is none)."""
@@ -83,7 +83,7 @@ on findDoc(p)
   tell application "Skim"
     repeat with i from 1 to count of documents
       try
-        if (POSIX path of (file of document i)) is p then return i
+        if (path of document i) is p then return i
       end try
     end repeat
   end tell
@@ -117,14 +117,19 @@ on run argv
       try
         if containing PDF of d then
           set fp to ""
+          set fe to ""
           try
-            set fp to POSIX path of (file of d)
+            set v to path of d
+            if v is not missing value then set fp to v
+          on error m
+            set fe to m
           end try
           set cp to 0
           try
             set cp to index of current page of d
           end try
-          set out to out & (name of d) & US & fp & US & cp & US & (count of pages of d) & RS
+          set n to count of pages of d
+          set out to out & (name of d) & US & fp & US & cp & US & n & US & fe & RS
         end if
       end try
     end repeat
@@ -322,12 +327,15 @@ class AppleScriptBackend:
         argv = [self._osascript, *_script_args(script), *args]
         return self._run(argv, OSASCRIPT_TIMEOUT_S).decode("utf-8", "replace")
 
-    def list_documents(self) -> list[DocumentInfo]:
+    def list_documents(self) -> tuple[list[DocumentInfo], list[str]]:
         docs: list[DocumentInfo] = []
+        warnings: list[str] = []
         for rec in _records(self._osa(_LIST_DOCUMENTS)):
-            name, path, current, count = (rec + [""] * 4)[:4]
+            name, path, current, count, path_error = (rec + [""] * 5)[:5]
             if not path:
-                continue  # unsaved documents have no file Skim could point us at
+                if path_error:
+                    warnings.append(f"Skipped '{name}': path lookup failed: {path_error}")
+                continue
             docs.append(
                 DocumentInfo(
                     name=name,
@@ -336,7 +344,7 @@ class AppleScriptBackend:
                     current_page=max(1, _first_int(current, 1)),
                 )
             )
-        return docs
+        return docs, warnings
 
     def get_selection(self, path: str) -> Selection:
         raw = self._osa(_GET_SELECTION, path).strip("\n")
